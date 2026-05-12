@@ -1,0 +1,12 @@
+*.exe
+
+
+.vscode/
+
+
+Makefile
+MICIUS.code-workspace
+
+
+
+!.gitignore
