@@ -1,8 +1,7 @@
 #include "AICoreEngine.h"
+#include "AIComputKrnl.h"
 
 #include <iostream>
-#include <vector>
-#include <thread>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -12,49 +11,33 @@
     #include <fstream>
     #include <string>
     #include <set>
-    #include <time.h>
 #endif
 
-//外部核心算子声明
-extern void DraftGEMV_AVX2(const float* __restrict, const float* __restrict, float* __restrict, uint32_t, uint32_t);
-extern uint32_t BranchlessArgMax_AVX2(const float*, uint32_t);
-
-//-------------------------------------------------------------------------
-//获取高精度时间戳
-//-------------------------------------------------------------------------
-inline double AIEngineFront::GetTime() const
-{
+// 获取高精度时间戳
+inline double AIEngineFront::GetTime() const {
 #ifdef _WIN32
     LARGE_INTEGER count, freq;
-    QueryPerformanceCounter(&count); 
-    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&count); QueryPerformanceFrequency(&freq);
     return (double)count.QuadPart / freq.QuadPart;
 #else
-    struct timespec ts; 
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 #endif
 }
 
-//-------------------------------------------------------------------------
-//拓扑探针：剥离超线程以提取物理核心ID
-//-------------------------------------------------------------------------
-std::vector<int> AIEngineFront::ProbePhysicalCores()
-{
+//物理核心探针
+std::vector<int> AIEngineFront::ProbePhysicalCores() {
     std::vector<int> physical_cores;
-
 #ifdef _WIN32
-    DWORD length = 0; 
-    GetLogicalProcessorInformation(nullptr, &length);
+    DWORD length = 0; GetLogicalProcessorInformation(nullptr, &length);
     if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
         std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> buffer(length / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
         if (GetLogicalProcessorInformation(buffer.data(), &length)) {
             for (const auto& info : buffer) {
                 if (info.Relationship == RelationProcessorCore) {
                     ULONG_PTR mask = info.ProcessorMask;
-                    ULONG_PTR lowest_bit = mask & ((~mask) + 1); //丢弃HT
-                    int idx = 0; 
-                    while ((lowest_bit & 1) == 0) { lowest_bit >>= 1; idx++; }
+                    ULONG_PTR lowest_bit = mask & ((~mask) + 1);
+                    int idx = 0; while ((lowest_bit & 1) == 0) { lowest_bit >>= 1; idx++; }
                     physical_cores.push_back(idx);
                 }
             }
@@ -75,82 +58,175 @@ std::vector<int> AIEngineFront::ProbePhysicalCores()
     return physical_cores;
 }
 
-//-------------------------------------------------------------------------
-//锁定物理核心
-//-------------------------------------------------------------------------
+//绑核操作
 void AIEngineFront::SetThreadAffinity(int cpu_id) {
 #ifdef _WIN32
     SetThreadAffinityMask(GetCurrentThread(), (1ULL << cpu_id));
 #else
-    cpu_set_t cpuset; 
-    CPU_ZERO(&cpuset); 
-    CPU_SET(cpu_id, &cpuset);
+    cpu_set_t cpuset; CPU_ZERO(&cpuset); CPU_SET(cpu_id, &cpuset);
     pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
 #endif
 }
 
-//-------------------------------------------------------------------------
-//构造函数修复：采用传参动态分配，取代硬编码
-//-------------------------------------------------------------------------
-AIEngineFront::AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t hidden_dim) {
+//核心初始化与基本部署
+AIEngineFront::AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t hidden_dim)
+{
     mem_pool = new HeteroMemPool(pool_size); 
     kv_cache = new KVCacheRingBuffer(max_seq_len, hidden_dim);    
     shared_proposal = mem_pool->GetDraftBuffer();
-    
     data_front = new AiDataFront(kv_cache, shared_proposal);
 
     std::vector<int> phys_cores = ProbePhysicalCores();
-    primary_physical_core = phys_cores.empty() ? 0 : phys_cores.back(); 
+    hq_core_id = phys_cores.empty() ? 0 : phys_cores[0];
+    
+    global_terminate.store(false, std::memory_order_release);
+
+    //剥离总控，剩下的核全部分配供运算
+    for (size_t i = 1; i < phys_cores.size() && i <= 3; ++i) {
+        worker_cores.push_back(phys_cores[i]);
+    }
+
+    //初始化任务信箱并启动运算线程
+    for (size_t i = 0; i < worker_cores.size(); ++i) {
+        WorkerTaskBox* box = static_cast<WorkerTaskBox*>(_mm_malloc(sizeof(WorkerTaskBox), 64));
+        box->state_flag.store(0, std::memory_order_relaxed);
+        task_boxes.push_back(box);
+        worker_threads.emplace_back(&AIEngineFront::WorkerRoutine, this, i);
+    }
 }
 
 AIEngineFront::~AIEngineFront()
 {
-    delete data_front;
-    delete kv_cache;
-    delete mem_pool;
+    global_terminate.store(true, std::memory_order_release);
+    for (auto box : task_boxes) {
+        box->state_flag.store(1, std::memory_order_release); //唤醒沉睡的线程以退出
+    }
+    for (auto& t : worker_threads) {
+        if (t.joinable()) t.join();
+    }
+    for (auto box : task_boxes) _mm_free(box);
+    delete data_front; delete kv_cache; delete mem_pool;
 }
 
-//-------------------------------------------------------------------------
-//异构投机解码主频管线
-//-------------------------------------------------------------------------
-void AIEngineFront::RunInferencePipeline(const float* draft_weights, float* current_hidden_state, uint32_t target_tokens)
+// 状态转移引擎 (Transformer/RNN的抽象)
+inline void AIEngineFront::ComputeStateTransition(uint32_t token, const float* parent_state, float* new_state, uint32_t hidden_dim)
 {
-    SetThreadAffinity(primary_physical_core);
-    
+    /*真正的模型中，这里会用Embedding(token)与parent_state进行注意力机制或线性变换*/
+    //目前作为占位符，仅将parent_state复制并加入微小扰动以模拟状态推进
+    for (uint32_t i = 0; i < hidden_dim; ++i) {
+        new_state[i] = parent_state[i] + (token * 0.0001f);
+    }
+}
+
+//运算核心的无锁热路径
+void AIEngineFront::WorkerRoutine(int worker_idx)
+{
+    SetThreadAffinity(worker_cores[worker_idx]);
+    WorkerTaskBox* my_box = task_boxes[worker_idx];
+
+    //分配属于该线程的Logits缓存，避免破坏L1D连续性
+    alignas(64) float logits[32000];
+
+    while (true) {
+        while (my_box->state_flag.load(std::memory_order_acquire) != 1) {
+            if (global_terminate.load(std::memory_order_acquire)) return;
+            _mm_pause(); 
+        }
+        if (global_terminate.load(std::memory_order_acquire)) return;
+
+        //读取依赖的父节点隐状态
+        float* parent_state = kv_cache->GetFP32Base() + (my_box->parent_slot * kv_cache->GetCurrentHead() /* fallback dim */);
+        float* my_state = kv_cache->GetFP32Base() + (my_box->allocated_slot * 128 /* dim */);
+
+        ComputeStateTransition(my_box->input_token, parent_state, my_state, 128);
+
+        //将新的State投射到Logits空间 （需在外部绑定全局参数）
+        //为了脱离全局变量，假设引擎内保存了quant_weights指针
+        //这里使用伪传参
+        extern const int8_t* g_quant_weights;
+        extern const QuantDescriptor* g_scales;
+        DraftGEMV_INT8_AVX2(g_quant_weights, g_scales, my_state, logits, 128, 32000);
+
+        //选择最优分支
+        my_box->predicted_token = BranchlessArgMax_AVX2(logits, 32000);
+
+        //将结果写入自己的KV槽位 (FP32 & INT8)
+        kv_cache->WriteTreeSlotFP32(my_box->allocated_slot, my_state);
+
+        //交还控制权
+        my_box->state_flag.store(2, std::memory_order_release);
+    }
+}
+
+//总控主频管线
+void AIEngineFront::RunTreeInferencePipeline(
+    const int8_t* quant_weights, const QuantDescriptor* weight_scales,
+    float* root_hidden_state, uint32_t target_tokens) 
+{
+    SetThreadAffinity(hq_core_id);
     uint32_t step = 0;
-    double start_time = GetTime();
+    uint32_t root_slot = kv_cache->GetCurrentHead();
+    kv_cache->WriteTreeSlotFP32(root_slot, root_hidden_state);
 
     while (step < target_tokens) {
         shared_proposal->Reset();
         shared_proposal->state_flags.store(1, std::memory_order_release);
-        
-        for(int k = 0; k < DraftProposal::MAX_K_DRAFTS; ++k) {
-            alignas(64) float logits[32000]; 
+
+        //动态深度扇出
+        //支持任意数量的Worker，形成深度推测链条
+        uint32_t current_parent_slot = root_slot;
+        uint32_t current_input_token = 0; //WIP: 真实系统中应传入上一步确定的Token
+        int32_t current_parent_idx = -1;
+
+        for (size_t i = 0; i < worker_cores.size(); ++i) {
+            if (shared_proposal->num_valid_drafts >= DraftProposal::MAX_K_DRAFTS) break;
+
+            //给Worker分配任务
+            task_boxes[i]->parent_slot = current_parent_slot;
+            task_boxes[i]->allocated_slot = (root_slot + i + 1) % kv_cache->GetMaxSeqLen();
+            task_boxes[i]->input_token = current_input_token;
+            task_boxes[i]->tree_node_idx = i;
             
-            DraftGEMV_AVX2(draft_weights, current_hidden_state, logits, 128, 32000);
-            uint32_t next_token = BranchlessArgMax_AVX2(logits, 32000);
-            
-            data_front->PrepareDraftForiGPU(next_token, logits[next_token]);
-            kv_cache->AppendDraftState(current_hidden_state);
+            //启动指令
+            task_boxes[i]->state_flag.store(1, std::memory_order_release); 
+
+            //等待当前Worker算完（下一层推测需要它的输出Token）
+            //若要完全重叠计算，可引入Top-K候选分支并行，此处为单链深度推测
+            while (task_boxes[i]->state_flag.load(std::memory_order_acquire) != 2) { 
+                _mm_pause(); 
+            }
+
+            //压入共享提案区
+            shared_proposal->PushTreeToken(task_boxes[i]->predicted_token, current_parent_idx);
+
+            //为下一个Worker更新上下文
+            current_parent_slot = task_boxes[i]->allocated_slot;
+            current_input_token = task_boxes[i]->predicted_token;
+            current_parent_idx = i; // 下一个节点以当前节点为父
+
+            //重置Worker状态机
+            task_boxes[i]->state_flag.store(0, std::memory_order_relaxed);
         }
 
+        //iGPU验证与回滚
 #ifdef TARGET_ARCH_DGPU_PCIE
         _mm_clflush(&shared_proposal->draft_tokens);
-        _mm_clflush(&shared_proposal->draft_logits);
+        _mm_clflush(&shared_proposal->parent_indices);
         _mm_mfence(); 
 #endif
-        
         shared_proposal->state_flags.store(2, std::memory_order_release);
 
-        while(shared_proposal->state_flags.load(std::memory_order_acquire) != 0) { 
-            _mm_pause(); 
-        } 
+        //等待iGPU审计
+        while (shared_proposal->state_flags.load(std::memory_order_acquire) != 0) { _mm_pause(); }
 
-        uint32_t accepted_count = shared_proposal->num_valid_drafts; 
+        uint32_t accepted_count = shared_proposal->num_valid_drafts;
         step += accepted_count;
-        
-        if(accepted_count < DraftProposal::MAX_K_DRAFTS) {
-            kv_cache->Rollback(DraftProposal::MAX_K_DRAFTS - accepted_count);
+
+        //O(1)
+        //如果推测全错，root_slot不变，同时下次直接覆盖脏数据
+        //如果对了N个，Root推进N步，旧数据失效
+        if (accepted_count > 0) {
+            root_slot = (root_slot + accepted_count) % kv_cache->GetMaxSeqLen();
         }
     }
 }
