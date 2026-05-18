@@ -21,6 +21,10 @@ struct alignas(64) WorkerTaskBox {
     
     uint32_t predicted_token;      //算子输出的最高概率Token
     
+    //核心专属的物理级量化缓存，由总部在初始化阶段分配
+    //避免#PF
+    int16_t* workspace_i16;
+    
     //0=空闲, 1=工作(HQ->Worker), 2=完成(Worker->HQ)
     std::atomic<uint32_t> state_flag; 
 };
@@ -37,6 +41,8 @@ private:
     AiDataFront* data_front;        
     DraftProposal* shared_proposal; 
     
+    uint32_t hidden_dim;
+    
     int hq_core_id;                 //总控物理核 (Core 0)
     std::vector<int> worker_cores;  //运算物理核 (Core 1, 2, 3...)
     
@@ -51,7 +57,7 @@ private:
     //工作核心执行的无锁热路径
     void WorkerRoutine(int worker_idx);
     
-    //基于Token的隐状态转移 (Transformer Layer/RNN Cell)
+    //基于Token的隐状态转移
     inline void ComputeStateTransition(uint32_t token, const float* parent_state, float* new_state, uint32_t hidden_dim);
 
 public:

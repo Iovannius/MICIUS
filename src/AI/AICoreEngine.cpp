@@ -2,6 +2,7 @@
 #include "AIComputKrnl.h"
 
 #include <iostream>
+#include <cstring>
 
 #ifdef _WIN32
     #include <windows.h>
@@ -69,7 +70,8 @@ void AIEngineFront::SetThreadAffinity(int cpu_id) {
 }
 
 //核心初始化与基本部署
-AIEngineFront::AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t hidden_dim)
+AIEngineFront::AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t h_dim)
+    : hidden_dim(h_dim)
 {
     mem_pool = new HeteroMemPool(pool_size); 
     kv_cache = new KVCacheRingBuffer(max_seq_len, hidden_dim);    
@@ -89,6 +91,16 @@ AIEngineFront::AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t hi
     //初始化任务信箱并启动运算线程
     for (size_t i = 0; i < worker_cores.size(); ++i) {
         WorkerTaskBox* box = static_cast<WorkerTaskBox*>(_mm_malloc(sizeof(WorkerTaskBox), 64));
+        
+        //内存池外置分配
+        //为每个Worker分配专属的量化Workspace
+        size_t ws_size = hidden_dim * sizeof(int16_t);
+        box->workspace_i16 = static_cast<int16_t*>(_mm_malloc(ws_size, 64));
+        
+        //强制触页
+        //写入0以强制OS映射真实物理页，消除首Token延迟尖峰
+        std::memset(box->workspace_i16, 0, ws_size);
+        
         box->state_flag.store(0, std::memory_order_relaxed);
         task_boxes.push_back(box);
         worker_threads.emplace_back(&AIEngineFront::WorkerRoutine, this, i);
@@ -104,16 +116,18 @@ AIEngineFront::~AIEngineFront()
     for (auto& t : worker_threads) {
         if (t.joinable()) t.join();
     }
-    for (auto box : task_boxes) _mm_free(box);
+    for (auto box : task_boxes) {
+        _mm_free(box->workspace_i16); //释放物理页
+        _mm_free(box);
+    }
     delete data_front; delete kv_cache; delete mem_pool;
 }
 
 // 状态转移引擎 (Transformer/RNN的抽象)
-inline void AIEngineFront::ComputeStateTransition(uint32_t token, const float* parent_state, float* new_state, uint32_t hidden_dim)
+inline void AIEngineFront::ComputeStateTransition(uint32_t token, const float* parent_state, float* new_state, uint32_t dim)
 {
     /*真正的模型中，这里会用Embedding(token)与parent_state进行注意力机制或线性变换*/
-    //目前作为占位符，仅将parent_state复制并加入微小扰动以模拟状态推进
-    for (uint32_t i = 0; i < hidden_dim; ++i) {
+    for (uint32_t i = 0; i < dim; ++i) {
         new_state[i] = parent_state[i] + (token * 0.0001f);
     }
 }
@@ -135,17 +149,25 @@ void AIEngineFront::WorkerRoutine(int worker_idx)
         if (global_terminate.load(std::memory_order_acquire)) return;
 
         //读取依赖的父节点隐状态
-        float* parent_state = kv_cache->GetFP32Base() + (my_box->parent_slot * kv_cache->GetCurrentHead() /* fallback dim */);
-        float* my_state = kv_cache->GetFP32Base() + (my_box->allocated_slot * 128 /* dim */);
+        float* parent_state = kv_cache->GetFP32Base() + (my_box->parent_slot * hidden_dim);
+        float* my_state = kv_cache->GetFP32Base() + (my_box->allocated_slot * hidden_dim);
 
-        ComputeStateTransition(my_box->input_token, parent_state, my_state, 128);
+        //修改的状态注入
+        ComputeStateTransition(my_box->input_token, parent_state, my_state, hidden_dim);
 
-        //将新的State投射到Logits空间 （需在外部绑定全局参数）
-        //为了脱离全局变量，假设引擎内保存了quant_weights指针
-        //这里使用伪传参
+        //接入重构算子
+        //传入专用物理页workspace_i16以避免线程内部malloc
         extern const int8_t* g_quant_weights;
         extern const QuantDescriptor* g_scales;
-        DraftGEMV_INT8_AVX2(g_quant_weights, g_scales, my_state, logits, 128, 32000);
+        DraftGEMV_INT8_AVX2(
+            g_quant_weights, 
+            g_scales, 
+            my_state, 
+            logits, 
+            my_box->workspace_i16, 
+            hidden_dim, 
+            32000
+        );
 
         //选择最优分支
         my_box->predicted_token = BranchlessArgMax_AVX2(logits, 32000);
@@ -159,6 +181,7 @@ void AIEngineFront::WorkerRoutine(int worker_idx)
 }
 
 //总控主频管线
+/*动态深度扇出版*/
 void AIEngineFront::RunTreeInferencePipeline(
     const int8_t* quant_weights, const QuantDescriptor* weight_scales,
     float* root_hidden_state, uint32_t target_tokens) 
@@ -196,13 +219,13 @@ void AIEngineFront::RunTreeInferencePipeline(
                 _mm_pause(); 
             }
 
-            //压入共享提案区
+            //压入共享提案区，形成树的拓扑边
             shared_proposal->PushTreeToken(task_boxes[i]->predicted_token, current_parent_idx);
 
             //为下一个Worker更新上下文
             current_parent_slot = task_boxes[i]->allocated_slot;
             current_input_token = task_boxes[i]->predicted_token;
-            current_parent_idx = i; // 下一个节点以当前节点为父
+            current_parent_idx = i; 
 
             //重置Worker状态机
             task_boxes[i]->state_flag.store(0, std::memory_order_relaxed);
