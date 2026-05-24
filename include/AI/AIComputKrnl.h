@@ -50,3 +50,13 @@ uint32_t BranchlessArgMax_AVX2(
 #ifdef __cplusplus
 }
 #endif
+
+/**
+ *@brief 单向无分支Top-3算子 (V0.3核心级联归约)
+ *放弃O(3N)的多次扫描，利用AVX2的Blend掩码实现寄存器内级联淘汰
+ */
+void BranchlessTop3_AVX2(
+    const float* __restrict logits, 
+    uint32_t vocab_size, 
+    uint32_t out_tokens[3]
+);
