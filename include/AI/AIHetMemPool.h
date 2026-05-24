@@ -102,38 +102,41 @@ public:
     }
 };
 
-//V2投机状态插槽池（原KVCacheRingBuffer）
-//改动如下：
-//1. 支持树状拓扑寻址(Slot-based addressing) 替代线性Ring逻辑
-//2. 双通道多精度并存，同时维护FP32状态、INT8状态及QuantDescriptor阵列
-class KVCacheRingBuffer
+//-------------------------------------------------------------------------
+//V3投机状态插槽池
+//集成栈式空闲链表，解决多路拓扑废弃后的大量内存碎片问题
+//-------------------------------------------------------------------------
+class KVCacheRingBuffer 
 {
 private:
-    float* fp32_cache_data;           //FP32状态缓存
-    int8_t* int8_cache_data;          //INT8量化状态缓存
-    QuantDescriptor* scales_data;     //INT8对应的量化参数
+    float* fp32_cache_data;           
+    int8_t* int8_cache_data;          
+    QuantDescriptor* scales_data;     
     
-    uint32_t head_cursor;             //线性推测时的游标（兼容模式）
     uint32_t max_seq_len;
     uint32_t hidden_dim;
-    uint32_t blocks_per_row;          //每行对应的Block数量
+    uint32_t blocks_per_row;
+
+    uint32_t* free_slots;
+    uint32_t free_count;
+    NanoSpinLock alloc_lock;
 
 public:
     KVCacheRingBuffer(uint32_t seq_len, uint32_t dim)
-        : head_cursor(0),
-          max_seq_len(seq_len),
-          hidden_dim(dim)
+        : max_seq_len(seq_len), hidden_dim(dim)
     {
         blocks_per_row = (dim + 63) / 64;
 
-        //分配FP32区
         fp32_cache_data = static_cast<float*>(_mm_malloc(seq_len * dim * sizeof(float), 64));
-        
-        //分配INT8区
         int8_cache_data = static_cast<int8_t*>(_mm_malloc(seq_len * dim * sizeof(int8_t), 64));
-        
-        //分配QuantDescriptor区（每Block占16字节）
         scales_data = static_cast<QuantDescriptor*>(_mm_malloc(seq_len * blocks_per_row * sizeof(QuantDescriptor), 64));
+        
+        //初始化空闲链表栈
+        free_slots = static_cast<uint32_t*>(_mm_malloc(seq_len * sizeof(uint32_t), 64));
+        free_count = seq_len;
+        for (uint32_t i = 0; i < seq_len; ++i) {
+            free_slots[i] = seq_len - 1 - i; 
+        }
     }
 
     ~KVCacheRingBuffer()
@@ -141,30 +144,43 @@ public:
         if (fp32_cache_data) _mm_free(fp32_cache_data);
         if (int8_cache_data) _mm_free(int8_cache_data);
         if (scales_data) _mm_free(scales_data);
+        if (free_slots) _mm_free(free_slots);
     }
 
-    //暴露基址指针，供AIDataFront进行GlobalBusRectify内存覆写
+    //插槽申请
+    inline uint32_t AllocateSlot()
+    {
+        alloc_lock.lock();
+        uint32_t s = (free_count==0) ? 0xFFFFFFFF : free_slots[--free_count];
+        alloc_lock.unlock();
+        
+        return s;
+    }
+
+    //插槽回收
+    inline void FreeSlot(uint32_t slot_idx)
+    {
+        alloc_lock.lock();
+        free_slots[free_count++] = slot_idx;
+        alloc_lock.unlock();
+    }
+
     inline float* GetFP32Base() const
     {
         return fp32_cache_data;
     }
-
     inline int8_t* GetINT8Base() const
     {
         return int8_cache_data;
     }
-    
     inline QuantDescriptor* GetScalesBase() const
     {
         return scales_data;
     }
 
-    //V2树状拓扑写入接口
-    //允许Core 1~3在并行探索时将结果写入指定的安全槽位，防止跨核覆写
     inline void WriteTreeSlotFP32(uint32_t slot_idx, const float* state)
     {
         float* dst = fp32_cache_data + (slot_idx * hidden_dim);
-        
         for (uint32_t i = 0; i < hidden_dim; i += 8) {
             _mm256_storeu_ps(dst + i, _mm256_loadu_ps(state + i));
         }
@@ -174,32 +190,9 @@ public:
     {
         int8_t* dst_q = int8_cache_data + (slot_idx * hidden_dim);
         QuantDescriptor* dst_s = scales_data + (slot_idx * blocks_per_row);
-        
-        //复制INT8状态
         std::memcpy(dst_q, q_state, hidden_dim * sizeof(int8_t));
-        //复制量化参数
         std::memcpy(dst_s, q_scales, blocks_per_row * sizeof(QuantDescriptor));
     }
-
-    //兼容V1的线性写入与回滚
-    inline void AppendDraftState(const float* state)
-    {
-        WriteTreeSlotFP32(head_cursor, state);
-        head_cursor = (head_cursor + 1) % max_seq_len;
-    }
-
-    inline void Rollback(uint32_t rejected_count)
-    {
-        head_cursor = (head_cursor >= rejected_count) ? (head_cursor - rejected_count) : 0;
-    }
-
-    //获取当前线性游标分配位置
-    inline uint32_t GetCurrentHead() const
-    {
-        return head_cursor;
-    }
-
-
 
     inline uint32_t GetMaxSeqLen() const
     {

@@ -2,8 +2,9 @@
 #include "AIComputKrnl.h"
 
 #include <immintrin.h>
-#include <cmath>
 #include <algorithm>
+#include <cmath>
+#include <cfloat>
 #include <cstdint>
 
 //-------------------------------------------------------------------------
@@ -176,7 +177,7 @@ extern "C" void DraftGEMV_INT8_AVX2(
 
 extern "C" uint32_t BranchlessArgMax_AVX2(const float* logits, uint32_t vocab_size) 
 {
-    __m256 v_max_val = _mm256_set1_ps(-INFINITY);
+    __m256 v_max_val = _mm256_set1_ps(-FLT_MAX);
     __m256i v_max_idx = _mm256_setzero_si256();
     
     __m256i v_curr_idx = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7); 
@@ -227,4 +228,112 @@ extern "C" uint32_t BranchlessArgMax_AVX2(const float* logits, uint32_t vocab_si
     }
 
     return global_idx;
+}
+
+//v0.3更新
+void BranchlessTop3_AVX2(const float* __restrict logits, uint32_t vocab_size, uint32_t out_tokens[3]) 
+{
+    __m256 v_max1 = _mm256_set1_ps(-FLT_MAX);
+    __m256 v_max2 = _mm256_set1_ps(-FLT_MAX);
+    __m256 v_max3 = _mm256_set1_ps(-FLT_MAX);
+
+    __m256i v_idx1 = _mm256_setzero_si256();
+    __m256i v_idx2 = _mm256_setzero_si256();
+    __m256i v_idx3 = _mm256_setzero_si256();
+    
+    __m256i v_curr_idx = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7); 
+    __m256i v_step = _mm256_set1_epi32(8);
+
+    uint32_t i = 0;
+    for (; i + 7 < vocab_size; i += 8) {
+        __m256 v_val = _mm256_loadu_ps(logits + i);
+        
+        //3级比较掩码
+        __m256 m1 = _mm256_cmp_ps(v_val, v_max1, _CMP_GT_OQ);
+        __m256 m2 = _mm256_cmp_ps(v_val, v_max2, _CMP_GT_OQ);
+        __m256 m3 = _mm256_cmp_ps(v_val, v_max3, _CMP_GT_OQ);
+
+        //---------------------------------------------------------
+        //浮点域级联下推
+        //比第一大，则第三=第二，第二=第一，第一=新值
+        //---------------------------------------------------------
+        //此处根据blendv的掩码特性可以用极为高效的方式逆向组装
+        //更新Top-3，比Top-2大 (m2)被Top-2挤占；否则看是否比Top-3大 (m3)
+        __m256 new_max3 = _mm256_blendv_ps(v_max3, v_val, m3);
+        new_max3 = _mm256_blendv_ps(new_max3, v_max2, m2);
+
+        //更新Top-2，比Top-1大 (m1)被Top-1挤占；否则看是否比Top-2大 (m2)
+        __m256 new_max2 = _mm256_blendv_ps(v_max2, v_val, m2);
+        new_max2 = _mm256_blendv_ps(new_max2, v_max1, m1);
+
+        //更新Top-1，这次没有额外的挤占逻辑
+        __m256 new_max1 = _mm256_blendv_ps(v_max1, v_val, m1);
+
+        v_max3 = new_max3; v_max2 = new_max2; v_max1 = new_max1;
+
+        //---------------------------------------------------------
+        //整型域索引
+        //与浮点域完全相同的级联下推逻辑
+        //---------------------------------------------------------
+        __m256i mi1 = _mm256_castps_si256(m1);
+        __m256i mi2 = _mm256_castps_si256(m2);
+        __m256i mi3 = _mm256_castps_si256(m3);
+
+        __m256i new_idx3 = _mm256_blendv_epi8(v_idx3, v_curr_idx, mi3);
+        new_idx3 = _mm256_blendv_epi8(new_idx3, v_idx2, mi2);
+
+        __m256i new_idx2 = _mm256_blendv_epi8(v_idx2, v_curr_idx, mi2);
+        new_idx2 = _mm256_blendv_epi8(new_idx2, v_idx1, mi1);
+
+        __m256i new_idx1 = _mm256_blendv_epi8(v_idx1, v_curr_idx, mi1);
+
+        v_idx3 = new_idx3; v_idx2 = new_idx2; v_idx1 = new_idx1;
+        v_curr_idx = _mm256_add_epi32(v_curr_idx, v_step);
+    }
+
+    //最后的标量排序
+    alignas(32) float f_m1[8], f_m2[8], f_m3[8];
+    alignas(32) uint32_t i_m1[8], i_m2[8], i_m3[8];
+    
+    _mm256_store_ps(f_m1, v_max1);
+    _mm256_store_si256((__m256i*)i_m1, v_idx1);
+    _mm256_store_ps(f_m2, v_max2);
+    _mm256_store_si256((__m256i*)i_m2, v_idx2);
+    _mm256_store_ps(f_m3, v_max3);
+    _mm256_store_si256((__m256i*)i_m3, v_idx3);
+
+    float final_m[3] = {-FLT_MAX, -FLT_MAX, -FLT_MAX};
+    uint32_t final_i[3] = {0, 0, 0};
+
+    auto push_val = [&](float v, uint32_t idx) {
+        if(v > final_m[2]) {
+            if(v > final_m[1]) {
+                if(v > final_m[0]) {
+                    final_m[2]=final_m[1]; final_i[2]=final_i[1];
+                    final_m[1]=final_m[0]; final_i[1]=final_i[0];
+                    final_m[0]=v; final_i[0]=idx;
+                } else {
+                    final_m[2]=final_m[1]; final_i[2]=final_i[1];
+                    final_m[1]=v; final_i[1]=idx;
+                }
+            } else {
+                final_m[2]=v; final_i[2]=idx;
+            }
+        }
+    };
+
+    for (int k = 0; k < 8; ++k) {
+        push_val(f_m1[k], i_m1[k]);
+        push_val(f_m2[k], i_m2[k]);
+        push_val(f_m3[k], i_m3[k]);
+    }
+    
+    //处理未对齐的尾部词表
+    for (; i < vocab_size; ++i) {
+        push_val(logits[i], i);
+    }
+
+    out_tokens[0] = final_i[0];
+    out_tokens[1] = final_i[1];
+    out_tokens[2] = final_i[2];
 }

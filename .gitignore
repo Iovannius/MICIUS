@@ -1,11 +1,26 @@
+#Binaries
 *.exe
+.out
 
+#Object files
+*.obj
+*.o
+*.lo
 
-.vscode/
+#Build outputs
 build/
+CMakeFiles/
+CMakeCache.txt
 
+#IDE
+.vscode/
 Makefile
 MICIUS.code-workspace
+
+#Models & Weights
+*.bin
+*.gguf
+*.safetensors
 
 
 

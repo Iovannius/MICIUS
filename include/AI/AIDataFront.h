@@ -53,7 +53,7 @@ public:
     {
         //当且仅当置信度高于阈值时进行装填，减少无效总线握手
         if (confidence_logit > -10.0f) { 
-            shared_proposal->PushTreeToken(token_id, parent_idx);
+            shared_proposal->SpawnNodeConcurrent(token_id, parent_idx, 0xFFFFFFFF);
         }
     }
 };
