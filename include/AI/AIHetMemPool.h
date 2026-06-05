@@ -91,9 +91,10 @@ public:
 
     //获取指向零拷贝区域的指针
     //64B对齐
-    inline DraftProposal* GetDraftBuffer() const
+    //索引支持
+    inline DraftProposal* GetDraftBuffer(int idx) const
     {
-        return static_cast<DraftProposal*>(zero_copy_base);
+        return static_cast<DraftProposal*>(zero_copy_base) + idx;
     }
 
     inline void* GetBase() const
@@ -103,12 +104,16 @@ public:
 };
 
 //-------------------------------------------------------------------------
-//V3投机状态插槽池
+//投机状态插槽池
 //集成栈式空闲链表，解决多路拓扑废弃后的大量内存碎片问题
+//无锁KV内存池的L1优化
+//放弃NanoSpinLock，实装版本化的Treiber Stack
 //-------------------------------------------------------------------------
-class KVCacheRingBuffer 
+class KVCacheRingBuffer
 {
+
 private:
+
     float* fp32_cache_data;           
     int8_t* int8_cache_data;          
     QuantDescriptor* scales_data;     
@@ -117,26 +122,27 @@ private:
     uint32_t hidden_dim;
     uint32_t blocks_per_row;
 
-    uint32_t* free_slots;
-    uint32_t free_count;
-    NanoSpinLock alloc_lock;
+    //无锁栈核心
+    /*高32位是版本号以防止ABA问题，低32位是栈顶游标*/
+    alignas(64) std::atomic<uint64_t> free_head;
+    uint32_t* next_ptrs; //单向链表指针池
 
 public:
+
     KVCacheRingBuffer(uint32_t seq_len, uint32_t dim)
         : max_seq_len(seq_len), hidden_dim(dim)
     {
         blocks_per_row = (dim + 63) / 64;
-
         fp32_cache_data = static_cast<float*>(_mm_malloc(seq_len * dim * sizeof(float), 64));
         int8_cache_data = static_cast<int8_t*>(_mm_malloc(seq_len * dim * sizeof(int8_t), 64));
         scales_data = static_cast<QuantDescriptor*>(_mm_malloc(seq_len * blocks_per_row * sizeof(QuantDescriptor), 64));
         
-        //初始化空闲链表栈
-        free_slots = static_cast<uint32_t*>(_mm_malloc(seq_len * sizeof(uint32_t), 64));
-        free_count = seq_len;
-        for (uint32_t i = 0; i < seq_len; ++i) {
-            free_slots[i] = seq_len - 1 - i; 
-        }
+        next_ptrs = static_cast<uint32_t*>(_mm_malloc(seq_len * sizeof(uint32_t), 64));
+        //编织初始物理插槽链表
+        for (uint32_t i = 0; i < seq_len - 1; ++i) { next_ptrs[i] = i + 1; }
+        next_ptrs[seq_len - 1] = 0xFFFFFFFF; // 尾节点
+        
+        free_head.store((0ULL << 32) | 0, std::memory_order_relaxed); //初始版本0，栈顶0
     }
 
     ~KVCacheRingBuffer()
@@ -144,58 +150,72 @@ public:
         if (fp32_cache_data) _mm_free(fp32_cache_data);
         if (int8_cache_data) _mm_free(int8_cache_data);
         if (scales_data) _mm_free(scales_data);
-        if (free_slots) _mm_free(free_slots);
+        if (next_ptrs) _mm_free(next_ptrs);
     }
 
-    //插槽申请
-    inline uint32_t AllocateSlot()
-    {
-        alloc_lock.lock();
-        uint32_t s = (free_count==0) ? 0xFFFFFFFF : free_slots[--free_count];
-        alloc_lock.unlock();
-        
-        return s;
+    //O(1)复杂度的无锁申请
+    inline uint32_t AllocateSlot() {
+        uint64_t head = free_head.load(std::memory_order_acquire);
+        while (true) {
+            uint32_t slot = static_cast<uint32_t>(head & 0xFFFFFFFF);
+            if (slot == 0xFFFFFFFF) return 0xFFFFFFFF; //极简OOM
+            
+            uint32_t next = next_ptrs[slot];
+            uint64_t new_head = ((head >> 32) + 1) << 32 | next; //版本号递增
+            
+            if (free_head.compare_exchange_weak(head, new_head, std::memory_order_release, std::memory_order_acquire)) {
+                return slot;
+            }
+        }
     }
 
-    //插槽回收
+    //回收
     inline void FreeSlot(uint32_t slot_idx)
     {
-        alloc_lock.lock();
-        free_slots[free_count++] = slot_idx;
-        alloc_lock.unlock();
+        if (slot_idx == 0xFFFFFFFF) return;
+
+        uint64_t head = free_head.load(std::memory_order_acquire);
+        while (true) {
+            next_ptrs[slot_idx] = static_cast<uint32_t>(head & 0xFFFFFFFF);
+            uint64_t new_head = ((head >> 32) + 1) << 32 | slot_idx;
+            
+            if (free_head.compare_exchange_weak(head, new_head, std::memory_order_release, std::memory_order_acquire)) {
+                break;
+            }
+        }
     }
 
     inline float* GetFP32Base() const
     {
         return fp32_cache_data;
     }
-    inline int8_t* GetINT8Base() const
-    {
-        return int8_cache_data;
-    }
-    inline QuantDescriptor* GetScalesBase() const
-    {
-        return scales_data;
-    }
-
     inline void WriteTreeSlotFP32(uint32_t slot_idx, const float* state)
     {
         float* dst = fp32_cache_data + (slot_idx * hidden_dim);
-        for (uint32_t i = 0; i < hidden_dim; i += 8) {
-            _mm256_storeu_ps(dst + i, _mm256_loadu_ps(state + i));
+        for (uint32_t i = 0; i < hidden_dim; i += 8) _mm256_storeu_ps(dst + i, _mm256_loadu_ps(state + i));
+    }
+
+    //无锁链表拼接批量回收，避免GC风暴
+    inline void BulkFreeSlots(uint32_t* slots, uint32_t count)
+    {
+        if (count == 0) return;
+
+        uint32_t valid_count = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (slots[i] != 0xFFFFFFFF) {
+                slots[valid_count++] = slots[i];
+            }
+        }
+        if (valid_count == 0) return;
+        count = valid_count;
+
+        for(uint32_t i = 0; i < count - 1; ++i) next_ptrs[slots[i]] = slots[i+1];
+        uint64_t head = free_head.load(std::memory_order_acquire);
+        while (true) {
+            next_ptrs[slots[count - 1]] = static_cast<uint32_t>(head & 0xFFFFFFFF);
+            uint64_t new_head = ((head >> 32) + count) << 32 | slots[0];
+            if (free_head.compare_exchange_weak(head, new_head, std::memory_order_release, std::memory_order_acquire)) break;
         }
     }
 
-    inline void WriteTreeSlotINT8(uint32_t slot_idx, const int8_t* q_state, const QuantDescriptor* q_scales)
-    {
-        int8_t* dst_q = int8_cache_data + (slot_idx * hidden_dim);
-        QuantDescriptor* dst_s = scales_data + (slot_idx * blocks_per_row);
-        std::memcpy(dst_q, q_state, hidden_dim * sizeof(int8_t));
-        std::memcpy(dst_s, q_scales, blocks_per_row * sizeof(QuantDescriptor));
-    }
-
-    inline uint32_t GetMaxSeqLen() const
-    {
-        return max_seq_len;
-    }
 };
