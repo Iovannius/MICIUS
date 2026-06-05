@@ -46,43 +46,56 @@ public:
 };
 
 //-------------------------------------------------------------------------
-//V3草稿提案 (256B爆炸版)
+//V4草稿提案
 //扩容至30个节点，适配Top-3的三层深度扇出 (1+3+9=13<30)
 //-------------------------------------------------------------------------
-//v0.3超标量并发提案树升级 (256B)
+//缓存一致性与真路径升级
 struct alignas(256) DraftProposal {
+
     static constexpr uint32_t MAX_K_DRAFTS = 30;
+
     uint32_t draft_tokens[MAX_K_DRAFTS];   
     int32_t  parent_indices[MAX_K_DRAFTS]; 
-    uint32_t slot_mapping[MAX_K_DRAFTS];   //Worker将申请的物理Slot注册于此供HQ进行回收
+    uint32_t slot_mapping[MAX_K_DRAFTS];
 
-    std::atomic<uint32_t> num_valid_drafts; //原子化游标，允许多核Worker无锁并发生成树节点
-    int32_t  accepted_tree_node_idx;       
-    std::atomic<uint32_t> state_flags;     
+    alignas(64) std::atomic<uint32_t> num_valid_drafts; //仅作为Allocator
+    alignas(64) std::atomic<uint32_t> commit_counter;   //真正的数据就绪启动成员
+    alignas(64) int32_t accepted_tree_node_idx;
+    alignas(64) std::atomic<uint32_t> state_flags;
+    alignas(64) std::atomic<int32_t> golden_leaf_idx;
     
     inline void Reset()
     {
         num_valid_drafts.store(0, std::memory_order_relaxed);
+        commit_counter.store(0, std::memory_order_relaxed); //同步重置发令成员
         accepted_tree_node_idx = -1;
+        golden_leaf_idx.store(0, std::memory_order_relaxed);
         state_flags.store(0, std::memory_order_relaxed);
     }
-    
-    //运算完成后调用此函数将节点挂载到树上
-    inline int32_t SpawnNodeConcurrent(uint32_t token, int32_t parent_idx, uint32_t phys_slot)
+
+    inline int32_t SpawnNodeConcurrent(uint32_t token, int32_t parent_idx, uint32_t phys_slot, bool is_golden = false)
     {
         uint32_t current = num_valid_drafts.load(std::memory_order_relaxed);
+
         while (current < MAX_K_DRAFTS) {
             if (num_valid_drafts.compare_exchange_weak(current, current + 1, std::memory_order_acquire, std::memory_order_relaxed)) {
-                //抢占写入安全槽位
+                
                 draft_tokens[current] = token;
                 parent_indices[current] = parent_idx;
                 slot_mapping[current] = phys_slot;
                 
+                // 【关键修复】在发令枪扣响前，将真路径标识安全落盘
+                if (is_golden) {
+                    golden_leaf_idx.store(current, std::memory_order_relaxed);
+                }
+                
+                // Release 屏障，保证上述所有写入（包括 golden_leaf_idx）对 HQ 绝对可见
+                commit_counter.fetch_add(1, std::memory_order_release);
+                
                 return current;
             }
         }
-
-        return -1; //树已满，修剪叶节点
+        return -1;
     }
 };
 

@@ -23,6 +23,7 @@ target_compile_options(my_target PRIVATE
     -ffast-math
     -flto=thin
     -funroll-loops
+    -falign-functions=32
     -falign-loops=${ALIGN}
     -mprefer-vector-width=256
     -fno-stack-protector
