@@ -10,8 +10,13 @@
 #include <atomic>
 
 struct alignas(64) WorkerContext {
-    int16_t* workspace_i16;
+    
+    int8_t* workspace_i8; 
     alignas(64) float* logits;
+
+    uint32_t tlab_slots[16];
+    uint32_t tlab_count;
+    uint32_t prng_state;
 };
 
 //L1优化的Chase-Lev无锁双端队列
@@ -124,6 +129,8 @@ private:
     inline void ComputeStateTransition(uint32_t token, const float* parent_state, float* new_state, uint32_t hidden_dim);
     
 public:
+
+    int recommended_shadow_core; //暴露的影子线程绑核建议
 
     AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t hidden_dim);
     ~AIEngineFront();

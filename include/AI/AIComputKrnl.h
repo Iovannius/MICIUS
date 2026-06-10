@@ -21,7 +21,7 @@ extern "C" {
  *@param scales        权重对应的量化描述符数组 (Block Size = 64)
  *@param input         尚未量化的FP32隐状态，激活值 (size=hidden_dim)
  *@param output        输出的FP32 Logits (size=vocab_size)
- *@param workspace_i16 外部传入的动态量化缓冲区 (size>=hidden_dim*sizeof(int16_t))
+ *@param workspace_i8 外部传入的动态量化缓冲区 (size>=hidden_dim*sizeof(int16_t))
  *@param hidden_dim    K维度，输入特征
  *@param vocab_size    M维度，词表大小或输出特征
  */
@@ -30,7 +30,7 @@ void DraftGEMV_INT8_AVX2(
     const QuantDescriptor* __restrict scales,
     const float* __restrict input, 
     float* __restrict output, 
-    int16_t* __restrict workspace_i16,
+    int8_t* __restrict workspace_i8,
     uint32_t hidden_dim, 
     uint32_t vocab_size
 );

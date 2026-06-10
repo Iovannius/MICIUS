@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
-project(MyClangProject LANGUAGES CXX)
+project(MICIUS LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(ARCH "native" CACHE STRING "")
 set(ALIGN "32" CACHE STRING "")
@@ -19,6 +22,8 @@ target_include_directories(my_target PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
 
 target_compile_options(my_target PRIVATE
     -O3
+    -g
+    -fno-omit-frame-pointer
     -march=${ARCH}
     -ffast-math
     -flto=thin
@@ -32,9 +37,18 @@ target_compile_options(my_target PRIVATE
 
 target_link_options(my_target PRIVATE
     -flto=thin
-    -static
-    -pthread
+    -g
+    -static-libgcc
+    -static-libstdc++
     -fuse-ld=lld
+    -pthread
 )
 
 target_link_libraries(my_target PRIVATE Threads::Threads)
+
+if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(my_target PRIVATE -gcodeview)
+    target_link_options(my_target PRIVATE
+        -Wl,--pdb=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/my_target.pdb
+    )
+endif()
