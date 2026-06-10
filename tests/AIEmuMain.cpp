@@ -139,9 +139,8 @@ int main()
     AIEngineFront* engine = new AIEngineFront(1024 * 1024 * 16, 2048, HIDDEN_DIM);
     DraftProposal* shared_proposal_arr = engine->GetSharedProposal(0);
 
-    int total_logical_cores = std::thread::hardware_concurrency();
-    //沙箱中将影子iGPU绑定到逻辑核1，与HQ共享物理核心0
-    int shadow_core_id = (total_logical_cores > 1) ? 1 : 0;
+    //读取引擎拓扑下的最佳影子线程核心
+    int shadow_core_id = engine->recommended_shadow_core;
     
     std::cout << "[Sys] HQ locked on Core 0. Shadow iGPU on Core " << shadow_core_id << "\n";
     std::thread igpu_thread(ShadowiGPU_Routine, shared_proposal_arr, shadow_core_id, OracleMode::REALISTIC);

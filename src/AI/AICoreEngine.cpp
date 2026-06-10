@@ -80,21 +80,74 @@ AIEngineFront::AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t h_
     data_front = new AiDataFront(kv_cache, shared_proposal[0]);
     
     std::vector<int> phys_cores = ProbePhysicalCores();
+    int total_logical_cores = std::thread::hardware_concurrency();
 
-    //如果OS拒绝返回正确的物理拓扑或核数不足2，放弃物理绑定而退回逻辑核枚举
+    //若全是P核关闭超线程：logical == phys
+    //若全是P核开启超线程：logical == phys * 2
+    //异构大小核(P+E)的logical必然介于两者之间
+    bool is_hetero = (total_logical_cores != phys_cores.size()) && (total_logical_cores != phys_cores.size() * 2);
+
     if (phys_cores.size() < 2) {
         int logical_count = std::thread::hardware_concurrency();
-        if (logical_count < 2) logical_count = 2; //单核也强行切出2个线程环境
+        if (logical_count < 2) logical_count = 2; 
         phys_cores.clear();
-        for (int i = 0; i < logical_count; ++i) {
-            phys_cores.push_back(i);
+        for (int i = 0; i < logical_count; ++i) phys_cores.push_back(i);
+        std::cout << "[Kernel] OS Topology Probe failed. Fallback to " << phys_cores.size() << " logical cores.\n";
+        
+        hq_core_id = phys_cores[0];
+        recommended_shadow_core = (phys_cores.size() > 1) ? phys_cores[1] : phys_cores[0];
+        for (size_t i = 1; i < phys_cores.size(); ++i) {
+            if (phys_cores[i] != recommended_shadow_core) worker_cores.push_back(phys_cores[i]);
         }
-        std::cout << "[Kernel] OS Topology Probe failed or restricted. Fallback to " << phys_cores.size() << " logical cores.\n";
-    }
 
-    hq_core_id = phys_cores[0];
-    for (size_t i = 1; i < phys_cores.size() && i <= 7; ++i) {
-        worker_cores.push_back(phys_cores[i]);
+    } else if (phys_cores.size() == 2) {
+        //双核处理器的策略，保证唯一Worker的算力绝对纯净
+        hq_core_id = phys_cores[0]; 
+        recommended_shadow_core = -1;
+        for (int id = 0; id < total_logical_cores; ++id) {
+            bool is_phys_head = false;
+            for (int p_core : phys_cores) { if (p_core == id) is_phys_head = true; }
+            if (!is_phys_head) {
+                recommended_shadow_core = id;
+                break;
+            }
+        }
+        /*极端情况下拓扑失败，回到传统模式*/
+        if (recommended_shadow_core == -1) recommended_shadow_core = hq_core_id + 1;
+        
+        worker_cores.push_back(phys_cores[1]);
+
+    } else if (is_hetero) {
+        //异构大小核的策略，保障Oracle响应优先级
+
+        //Total_Logical = P * 2 + E
+        //Total_Physical = P + E
+        //=> P = Total_Logical - Total_Physical
+        int num_p_cores = total_logical_cores - phys_cores.size();
+        int total_e_cores = phys_cores.size() - num_p_cores;
+
+        hq_core_id = phys_cores[0];              //HQ占用P核0
+        recommended_shadow_core = phys_cores[1]; //iGPU占用P核1
+
+        //识别并剔除SoC岛上的LP-E核
+        int valid_e_cores = total_e_cores;
+        if (total_e_cores % 4 == 2) {
+            valid_e_cores -= 2; 
+            std::cout << "[Kernel] Meteor Lake detected. Dropping 2 SoC LP-E cores.\n";
+        }
+
+        //将Worker阵列全部且仅限绑定至E核
+        for (int i = 0; i < valid_e_cores; ++i) {
+            worker_cores.push_back(phys_cores[num_p_cores + i]); 
+        }
+
+    } else {
+        //同构多核的策略
+        hq_core_id = phys_cores[0];                 //HQ占用Core 0
+        recommended_shadow_core = phys_cores.back();//iGPU强行踢到最后一个物理核
+        for (size_t i = 1; i < phys_cores.size() - 1; ++i) {
+            worker_cores.push_back(phys_cores[i]);  //中间的物理核成为Worker阵列
+        }
     }
 
     std::cout << "[Kernel] Worker Array size: " << worker_cores.size() << "\n";
@@ -106,10 +159,13 @@ AIEngineFront::AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t h_
         worker_gen[i].val.store(0, std::memory_order_relaxed);
         WorkerContext* ctx = static_cast<WorkerContext*>(_mm_malloc(sizeof(WorkerContext), 64));
         
-        ctx->workspace_i16 = static_cast<int16_t*>(_mm_malloc(hidden_dim * sizeof(int16_t), 64));
+        ctx->workspace_i8 = static_cast<int8_t*>(_mm_malloc(hidden_dim * sizeof(int8_t), 64));
         ctx->logits = static_cast<float*>(_mm_malloc(32000 * sizeof(float), 64));
         
-        std::memset(ctx->workspace_i16, 0, hidden_dim * sizeof(int16_t));
+        ctx->tlab_count = 0;
+        ctx->prng_state = (uint32_t)(1337 + i * 19);
+        
+        std::memset(ctx->workspace_i8, 0, hidden_dim * sizeof(int8_t));
         std::memset(ctx->logits, 0, 32000 * sizeof(float));
         
         worker_ctxs.push_back(ctx); worker_threads.emplace_back(&AIEngineFront::WorkerRoutine, this, i);
@@ -125,7 +181,7 @@ AIEngineFront::~AIEngineFront()
     }
 
     for (auto ctx : worker_ctxs) {
-        _mm_free(ctx->workspace_i16);
+        _mm_free(ctx->workspace_i8);
         _mm_free(ctx->logits);
         _mm_free(ctx);
     }
@@ -174,12 +230,16 @@ void AIEngineFront::WorkerRoutine(int w_idx)
 
         if(!got) got = local_queues[w_idx].pop_bottom(task);
         
-        if(!got) {
-            for(size_t i=1; i<worker_cores.size(); ++i) {
-                if(local_queues[(w_idx+i)%worker_cores.size()].steal_top(task)) {
-                    got = true;
-                    break;
-                }
+        if(!got && worker_cores.size() > 1) {
+            /*Xorshift32极速伪随机发生器*/
+            ctx->prng_state ^= ctx->prng_state << 13;
+            ctx->prng_state ^= ctx->prng_state >> 17;
+            ctx->prng_state ^= ctx->prng_state << 5;
+            
+            //每次失败随机挑一个Victim献祭（窃取），修复前版本O(N^2)的缓存行广播性能灾难
+            size_t victim = ctx->prng_state % worker_cores.size();
+            if (victim != (size_t)w_idx) {
+                got = local_queues[victim].steal_top(task);
             }
         }
 
@@ -226,6 +286,25 @@ void AIEngineFront::WorkerRoutine(int w_idx)
 
         task.fusion_depth = 4;
         bool fusion_continue = true;
+
+        auto tlab_alloc = [&]() -> uint32_t {
+            if (ctx->tlab_count == 0) {
+                //通过总线一次性获取16个插槽
+                ctx->tlab_count = kv_cache->BulkAllocateSlots(ctx->tlab_slots, 16);
+                if (ctx->tlab_count == 0) return 0xFFFFFFFF;
+            }
+            return ctx->tlab_slots[--ctx->tlab_count];
+        };
+        
+        auto tlab_free = [&](uint32_t slot) {
+            //本地还有空间
+            //塞回本地，填满则使用原子指令操作归还全局
+            if (ctx->tlab_count < 16) {
+                ctx->tlab_slots[ctx->tlab_count++] = slot;
+            } else {
+                kv_cache->FreeSlot(slot);
+            }
+        };
         
         while(fusion_continue && task.fusion_depth > 0) {
 
@@ -234,7 +313,7 @@ void AIEngineFront::WorkerRoutine(int w_idx)
             
             float *p_state = kv_cache->GetFP32Base()+(task.parent_slot*hidden_dim), *m_state = kv_cache->GetFP32Base()+(task.alloc_slot*hidden_dim);
             ComputeStateTransition(task.input_token, p_state, m_state, hidden_dim);
-            DraftGEMV_INT8_AVX2(g_quant_weights, g_scales, m_state, ctx->logits, ctx->workspace_i16, hidden_dim, 32000);
+            DraftGEMV_INT8_AVX2(g_quant_weights, g_scales, m_state, ctx->logits, ctx->workspace_i8, hidden_dim, 32000);
             
             if(task.gen_id != global_generation.load(std::memory_order_relaxed)) break;
             kv_cache->WriteTreeSlotFP32(task.alloc_slot, m_state);
@@ -246,7 +325,7 @@ void AIEngineFront::WorkerRoutine(int w_idx)
             bool golden_survived = false;
             FrontierTask child_golden;
             
-            uint32_t slot_0 = kv_cache->AllocateSlot();
+            uint32_t slot_0 = tlab_alloc();
             if (slot_0 == 0xFFFFFFFF) break;
 
             //对于k=0 (可能携带Golden属性)
@@ -267,20 +346,20 @@ void AIEngineFront::WorkerRoutine(int w_idx)
                 golden_survived = true;
 
             } else {
-                kv_cache->FreeSlot(slot_0); //极小概率下释放插槽
+                tlab_free(slot_0);
             }
 
             //处理k=2和k=1的旁支
             //推入队列的LIFO顺序保证k=1会比k=2先弹出
             for(int k=2; k>=1; --k) { 
                 
-                uint32_t new_slot = kv_cache->AllocateSlot();
+                uint32_t new_slot = tlab_alloc();
                 if (new_slot == 0xFFFFFFFF) break;
                 
                 //对于旁支k=1, k=2传false或依赖默认参数
                 int32_t new_tree_idx = active_prop->SpawnNodeConcurrent(top_k[k], task.parent_tree_idx, new_slot, false);
                 if(new_tree_idx == -1) {
-                    kv_cache->FreeSlot(new_slot);
+                    tlab_free(new_slot);
                     break;
                 } //容量超限，静默丢弃旁支
 
