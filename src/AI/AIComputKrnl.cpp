@@ -8,7 +8,7 @@
 #include <cstdint>
 
 //-------------------------------------------------------------------------
-//V3核心运算引擎
+//v0.5核心运算引擎
 //彻底清除流水线气泡、冷启动页表中断及计算域切换惩罚
 //-------------------------------------------------------------------------
 
@@ -31,7 +31,7 @@ inline float _mm256_reduce_add_ps(__m256 v)
 }
 
 /**
- *@brief V3版Small-GEMV
+ *@brief v0.5版Small-GEMV
  *INT16路线及延迟规约
  */
 extern "C" void DraftGEMV_INT8_AVX2(
@@ -58,8 +58,10 @@ extern "C" void DraftGEMV_INT8_AVX2(
     //纯洁的128-bit包络，规避跨Lane的数据错位
     for (; k + 15 < hidden_dim; k += 16) {
 
-        __m256 f0 = _mm256_loadu_ps(input + k);
-        __m256 f1 = _mm256_loadu_ps(input + k + 8);
+        //外部AIEmuMain 已经保证了input和workspace是alignas(64)分配
+        //且这里的k是16的倍数，地址绝对满足32字节对齐，直接使用_mm256_load_ps消除隐式的对齐检查开销
+        __m256 f0 = _mm256_load_ps(input + k);
+        __m256 f1 = _mm256_load_ps(input + k + 8);
         
         __m256i i32_0 = _mm256_cvtps_epi32(_mm256_mul_ps(f0, _mm256_set1_ps(inv_input_scale)));
         __m256i i32_1 = _mm256_cvtps_epi32(_mm256_mul_ps(f1, _mm256_set1_ps(inv_input_scale)));
@@ -73,7 +75,9 @@ extern "C" void DraftGEMV_INT8_AVX2(
         __m128i i16_1 = _mm_packs_epi32(lo1, hi1);
 
         __m128i i8 = _mm_packs_epi16(i16_0, i16_1);
-        _mm_storeu_si128((__m128i*)(workspace_i8 + k), i8);
+        
+        //k必然是16的倍数，因而其绝对满足_mm_store_si128指令要求的16字节对齐
+        _mm_store_si128((__m128i*)(workspace_i8 + k), i8);
     }
     
     for (; k < hidden_dim; ++k) {
@@ -111,35 +115,46 @@ extern "C" void DraftGEMV_INT8_AVX2(
 
             uint32_t kk = k_start;
             
-            /*v0.4.1重构*/
-            /*32字节超宽步进，理论上端口算力提升一倍*/
+            /*v0.4.1 -> V0.5重构*/
+            //最大程度利用AVX2的执行端口，不使用掩码
             for (; kk + 31 < k_end; kk += 32) {
 
-                __m256i x_i8 = _mm256_loadu_si256((const __m256i*)(workspace_i8 + kk));
-                __m256i abs_x = _mm256_abs_epi8(x_i8); //提取绝对值为UINT_8
+                //L1D主动预取
+                //提前4个Cache Line (128 Bytes)将下一轮权重拉入L1掩盖DDR与Ring Bus延迟
+                _mm_prefetch((const char*)(w0 + kk + 128), _MM_HINT_T0);
+                _mm_prefetch((const char*)(w1 + kk + 128), _MM_HINT_T0);
+                _mm_prefetch((const char*)(w2 + kk + 128), _MM_HINT_T0);
+                _mm_prefetch((const char*)(w3 + kk + 128), _MM_HINT_T0);
 
-                //Row 0
-                __m256i w_i8_0 = _mm256_loadu_si256((const __m256i*)(w0 + kk));
-                __m256i signed_w_0 = _mm256_sign_epi8(w_i8_0, x_i8); //将符号转移给权重
-                __m256i dot16_0 = _mm256_maddubs_epi16(abs_x, signed_w_0); /*一次算32个*/
-                b_acc0 = _mm256_add_epi32(b_acc0, _mm256_madd_epi16(dot16_0, ones));
+                //阶段A 
+                //workspace_i8与quant_weights均是alignas(64)分配且hidden_dim(768)与kk都是32的倍数
+                //此处的内存边界绝对安全，LSU可以满负荷对齐加载，同时消除loadu带来的微指令撕裂隐患
+                __m256i x_i8 = _mm256_load_si256((const __m256i*)(workspace_i8 + kk));
+                __m256i w_i8_0 = _mm256_load_si256((const __m256i*)(w0 + kk));
+                __m256i w_i8_1 = _mm256_load_si256((const __m256i*)(w1 + kk));
+                __m256i w_i8_2 = _mm256_load_si256((const __m256i*)(w2 + kk));
+                __m256i w_i8_3 = _mm256_load_si256((const __m256i*)(w3 + kk));
 
-                //Row 1
-                __m256i w_i8_1 = _mm256_loadu_si256((const __m256i*)(w1 + kk));
+                //阶段B
+                //ALU绝对值与符号并发转移
+                __m256i abs_x = _mm256_abs_epi8(x_i8); 
+                __m256i signed_w_0 = _mm256_sign_epi8(w_i8_0, x_i8);
                 __m256i signed_w_1 = _mm256_sign_epi8(w_i8_1, x_i8);
-                __m256i dot16_1 = _mm256_maddubs_epi16(abs_x, signed_w_1);
-                b_acc1 = _mm256_add_epi32(b_acc1, _mm256_madd_epi16(dot16_1, ones));
-
-                //Row 2
-                __m256i w_i8_2 = _mm256_loadu_si256((const __m256i*)(w2 + kk));
                 __m256i signed_w_2 = _mm256_sign_epi8(w_i8_2, x_i8);
-                __m256i dot16_2 = _mm256_maddubs_epi16(abs_x, signed_w_2);
-                b_acc2 = _mm256_add_epi32(b_acc2, _mm256_madd_epi16(dot16_2, ones));
-
-                //Row 3
-                __m256i w_i8_3 = _mm256_loadu_si256((const __m256i*)(w3 + kk));
                 __m256i signed_w_3 = _mm256_sign_epi8(w_i8_3, x_i8);
+
+                //阶段C
+                //并发FMA发射塞满的多路执行端口
+                __m256i dot16_0 = _mm256_maddubs_epi16(abs_x, signed_w_0);
+                __m256i dot16_1 = _mm256_maddubs_epi16(abs_x, signed_w_1);
+                __m256i dot16_2 = _mm256_maddubs_epi16(abs_x, signed_w_2);
                 __m256i dot16_3 = _mm256_maddubs_epi16(abs_x, signed_w_3);
+
+                //阶段D
+                //归约累加
+                b_acc0 = _mm256_add_epi32(b_acc0, _mm256_madd_epi16(dot16_0, ones));
+                b_acc1 = _mm256_add_epi32(b_acc1, _mm256_madd_epi16(dot16_1, ones));
+                b_acc2 = _mm256_add_epi32(b_acc2, _mm256_madd_epi16(dot16_2, ones));
                 b_acc3 = _mm256_add_epi32(b_acc3, _mm256_madd_epi16(dot16_3, ones));
             }
 

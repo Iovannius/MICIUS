@@ -11,7 +11,7 @@
 
 struct alignas(64) WorkerContext {
     
-    int8_t* workspace_i8; 
+    int8_t* workspace_i8;
     alignas(64) float* logits;
 
     uint32_t tlab_slots[16];
@@ -88,10 +88,42 @@ struct FrontierTask {
     bool is_golden;
 };
 
+enum class PumpResult
+{
+    YIELD_TOKEN,
+    TREE_REJECTED,
+    OOM_ERROR
+};
+
 class AIEngineFront
 {
 
 private:
+
+    void* wrapper_context; //用于保存外部的 MiciusContext 指针
+
+    /*---v0.5 Runtime隔离边界---*/
+    const int8_t* engine_quant_weights;
+    const QuantDescriptor* engine_scales;
+
+    /*---v0.5 状态机持久上下文---*/
+    bool pipeline_initialized;
+    bool awaiting_fallback_token;
+    uint32_t current_cpu_tree;
+    uint32_t current_gpu_tree;
+    uint32_t pipeline_roots[2];
+    uint32_t pipeline_base_slots[2];
+    uint32_t last_accepted_token;
+
+    /*---v0.5 Token泵队列---*/
+    //用于缓存单次预言验证后推测树被连续接受的多个Token
+    uint32_t accepted_tokens_queue[DraftProposal::MAX_K_DRAFTS + 2];
+    uint32_t token_queue_head;
+    uint32_t token_queue_tail;
+
+    /*---外部预言回调注入---*/
+    void* verifier_user_data;
+    void (*verifier_callback)(void* ctx, void* tree_handle, void* user_data);
 
     HeteroMemPool* mem_pool;
     KVCacheRingBuffer* kv_cache;
@@ -107,16 +139,8 @@ private:
     alignas(64) std::atomic<uint32_t> global_generation{0};
     alignas(64) std::atomic<bool> global_terminate{false};
     
-    struct alignas(64) PaddedWorkerGen {
-        std::atomic<uint32_t> val;
-        // 构造函数初始化，避免残留脏数据
-        PaddedWorkerGen()
-        {
-            val.store(0, std::memory_order_relaxed);
-        }
-    };
-    
-    PaddedWorkerGen worker_gen[16];
+    //取消worker_gen数组，使用单一的高速全局屏障以降低O(N)级总线阻塞
+    alignas(64) std::atomic<uint32_t> workers_finished{0};
 
     alignas(64) std::atomic<int> seed_claimed{1};
     alignas(64) FrontierTask global_seed_task;
@@ -134,6 +158,18 @@ public:
 
     AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t hidden_dim);
     ~AIEngineFront();
+
+    //绑定外部模型权重
+    void LoadWeights(const int8_t* q_weights, const QuantDescriptor* scales);
+    
+    //注册外部预言回调
+    void RegisterVerifier(void (*cb)(void*, void*, void*), void* wrapper_ctx, void* user_data);
+
+    //废弃RunTreeInferencePipeline，替换为以下方法
+    void InitPipeline(float* root_hidden_state, uint32_t initial_token);
+    
+    PumpResult PumpSingleToken(uint32_t external_input_token, const float* external_hidden_state, uint32_t* out_token); //核心状态机驱动器
+    //每次调用泵出一个Token，返回true表示出现新Token，返回false表示内部异常或OOM
     
     AIEngineFront(const AIEngineFront&) = delete;
     AIEngineFront& operator=(const AIEngineFront&) = delete;
@@ -144,6 +180,12 @@ public:
     inline DraftProposal* GetSharedProposal(int idx) const
     {
         return shared_proposal[idx];
+    }
+
+    //暴露内存池给预言线程执行后台GC
+    inline KVCacheRingBuffer* GetKVCache() const
+    {
+        return kv_cache;
     }
 
 };

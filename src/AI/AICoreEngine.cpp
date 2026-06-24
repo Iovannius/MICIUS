@@ -156,14 +156,14 @@ AIEngineFront::AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t h_
     
     for (size_t i = 0; i < worker_cores.size(); ++i) {
 
-        worker_gen[i].val.store(0, std::memory_order_relaxed);
         WorkerContext* ctx = static_cast<WorkerContext*>(_mm_malloc(sizeof(WorkerContext), 64));
-        
         ctx->workspace_i8 = static_cast<int8_t*>(_mm_malloc(hidden_dim * sizeof(int8_t), 64));
         ctx->logits = static_cast<float*>(_mm_malloc(32000 * sizeof(float), 64));
         
         ctx->tlab_count = 0;
         ctx->prng_state = (uint32_t)(1337 + i * 19);
+
+        if (ctx->prng_state == 0) ctx->prng_state = 1;
         
         std::memset(ctx->workspace_i8, 0, hidden_dim * sizeof(int8_t));
         std::memset(ctx->logits, 0, 32000 * sizeof(float));
@@ -211,9 +211,9 @@ void AIEngineFront::WorkerRoutine(int w_idx)
 
     while(!global_terminate.load(std::memory_order_acquire)) {
         uint32_t current_gen = global_generation.load(std::memory_order_relaxed);
-        worker_gen[w_idx].val.store(current_gen, std::memory_order_release); 
         if (local_gen != current_gen) {
             local_gen = current_gen;
+            workers_finished.fetch_add(1, std::memory_order_release);
         }
 
         FrontierTask task;
@@ -246,17 +246,17 @@ void AIEngineFront::WorkerRoutine(int w_idx)
         if(!got) {
 
             if (idle_spins < 50) {
-                //阶段1
-                //极短停留（约200纳秒内响应）应对正常内存延迟
+                //阶段1：极短停留应对正常延迟
                 _mm_pause();
             } else if (idle_spins < 200) {
-                //阶段2
-                //中等停留，降低取指和发射单元压力，降低局部热点
+                //阶段2：中等停留，降低取指和发射单元压力
                 for(int p = 0; p < 8; ++p) _mm_pause();
             } else {
-                //阶段3
-                //让出核心执行权降低硅片功耗，防止过流
-                std::this_thread::yield();
+                //阶段3：长期停留但选用深度自旋取代yield()
+                //最高4096次pause，稳定用户态执行权，避免跨核Stealing被OS挂起打断
+                int power = std::min((idle_spins - 200) / 50 + 4, 12);
+                int pause_count = 1 << power;
+                for(int p = 0; p < pause_count; ++p) _mm_pause();
             }
             
             idle_spins++;
@@ -264,7 +264,7 @@ void AIEngineFront::WorkerRoutine(int w_idx)
         }
         
         //抢到任务立刻清空休眠计数器，恢复高速轮询状态
-        idle_spins = 0; 
+        idle_spins = 0;
         
         //任务过滤与纪元强制同步
         uint32_t current_global_gen = global_generation.load(std::memory_order_relaxed);
@@ -275,7 +275,7 @@ void AIEngineFront::WorkerRoutine(int w_idx)
         //如果抢到了合法新任务但本地纪元还没跟上，强制提前同步防止下一次循环误删队列
         if (local_gen != task.gen_id) {
             local_gen = task.gen_id;
-            worker_gen[w_idx].val.store(local_gen, std::memory_order_release);
+            workers_finished.fetch_add(1, std::memory_order_release);
         }
 
         DraftProposal* active_prop = shared_proposal[task.tree_idx];
@@ -313,7 +313,7 @@ void AIEngineFront::WorkerRoutine(int w_idx)
             
             float *p_state = kv_cache->GetFP32Base()+(task.parent_slot*hidden_dim), *m_state = kv_cache->GetFP32Base()+(task.alloc_slot*hidden_dim);
             ComputeStateTransition(task.input_token, p_state, m_state, hidden_dim);
-            DraftGEMV_INT8_AVX2(g_quant_weights, g_scales, m_state, ctx->logits, ctx->workspace_i8, hidden_dim, 32000);
+            DraftGEMV_INT8_AVX2(this->engine_quant_weights, this->engine_scales, m_state, ctx->logits, ctx->workspace_i8, hidden_dim, 32000);
             
             if(task.gen_id != global_generation.load(std::memory_order_relaxed)) break;
             kv_cache->WriteTreeSlotFP32(task.alloc_slot, m_state);
@@ -326,8 +326,12 @@ void AIEngineFront::WorkerRoutine(int w_idx)
             FrontierTask child_golden;
             
             uint32_t slot_0 = tlab_alloc();
-            if (slot_0 == 0xFFFFFFFF) break;
-
+            if (slot_0 == 0xFFFFFFFF) {
+                active_prop->state_flags.store(3, std::memory_order_release);
+                fusion_continue = false;
+                break;
+            }
+            
             //对于k=0 (可能携带Golden属性)
             int32_t tree_idx_0 = active_prop->SpawnNodeConcurrent(top_k[0], task.parent_tree_idx, slot_0, task.is_golden);            
             
@@ -354,7 +358,11 @@ void AIEngineFront::WorkerRoutine(int w_idx)
             for(int k=2; k>=1; --k) { 
                 
                 uint32_t new_slot = tlab_alloc();
-                if (new_slot == 0xFFFFFFFF) break;
+                if (new_slot == 0xFFFFFFFF) {
+                    active_prop->state_flags.store(3, std::memory_order_release);
+                    fusion_continue = false;
+                    break;
+                }
                 
                 //对于旁支k=1, k=2传false或依赖默认参数
                 int32_t new_tree_idx = active_prop->SpawnNodeConcurrent(top_k[k], task.parent_tree_idx, new_slot, false);
@@ -395,169 +403,264 @@ void AIEngineFront::WorkerRoutine(int w_idx)
     }
 }
 
-//新Spearhead GC管线
-void AIEngineFront::RunTreeInferencePipeline(const int8_t* quant_weights, const QuantDescriptor* weight_scales, float* root_hidden_state, uint32_t target_tokens)
+//v0.5分布阻塞式Spearhead GC管线
+void AIEngineFront::LoadWeights(const int8_t* q_weights, const QuantDescriptor* scales)
+{
+    this->engine_quant_weights = q_weights;
+    this->engine_scales = scales;
+}
+
+void AIEngineFront::RegisterVerifier(void (*cb)(void*, void*, void*), void* wrapper_ctx, void* user_data)
+{
+    this->verifier_callback = cb;
+    this->wrapper_context = wrapper_ctx;
+    this->verifier_user_data = user_data;
+}
+
+void AIEngineFront::InitPipeline(float* root_hidden_state, uint32_t initial_token)
 {
     SetThreadAffinity(hq_core_id);
     
-    uint32_t step = 0;
-    uint32_t cpu_tree = 0;
-    uint32_t accepted_token = 0; 
+    pipeline_initialized = true;
+    awaiting_fallback_token = false;
+    current_cpu_tree = 0;
+    last_accepted_token = initial_token;
+    token_queue_head = 0;
+    token_queue_tail = 0;
     
-    uint32_t roots[2];
-    uint32_t base_slots[2];
+    pipeline_roots[0] = kv_cache->AllocateSlot();
+    pipeline_base_slots[0] = kv_cache->AllocateSlot();
 
-    roots[0] = kv_cache->AllocateSlot();
-    kv_cache->WriteTreeSlotFP32(roots[0], root_hidden_state);
-    base_slots[0] = kv_cache->AllocateSlot();
+    if (pipeline_roots[0] == 0xFFFFFFFF || pipeline_base_slots[0] == 0xFFFFFFFF) {
+        pipeline_initialized = false;
+        return;
+    }
 
-    shared_proposal[cpu_tree]->Reset();
-    uint32_t epoch = global_generation.load();
+    kv_cache->WriteTreeSlotFP32(pipeline_roots[0], root_hidden_state);
+    shared_proposal[current_cpu_tree]->Reset();
     
     FrontierTask seed;
-
-    seed.gen_id=epoch;
-    seed.parent_slot=roots[0];
-    seed.alloc_slot=base_slots[0];
-    seed.input_token=accepted_token;
-    seed.parent_tree_idx=-1;
-    seed.branch_id=0;
-    seed.fusion_depth=4;
-    seed.tree_idx=cpu_tree;
-    seed.is_golden=true;
+    seed.gen_id = global_generation.load();
+    seed.parent_slot = pipeline_roots[0];
+    seed.alloc_slot = pipeline_base_slots[0];
+    seed.input_token = last_accepted_token;
+    seed.parent_tree_idx = -1;
+    seed.branch_id = 0;
+    seed.fusion_depth = 4;
+    seed.tree_idx = current_cpu_tree;
+    seed.is_golden = true;
+    
     global_seed_task = seed;
     seed_claimed.store(0, std::memory_order_release);
+}
 
-    while(step < target_tokens) {
+PumpResult AIEngineFront::PumpSingleToken(uint32_t external_input_token, const float* external_hidden_state, uint32_t* out_token)
+{
+    if (!pipeline_initialized) return PumpResult::OOM_ERROR;
 
-        //将HQ的屏障从num_valid_drafts切换至commit_counter
-        //std::memory_order_acquire会与Worker的release握手，读到30则Worker写入的数组数据在内存中必定可见
-        while(shared_proposal[cpu_tree]->commit_counter.load(std::memory_order_acquire) < DraftProposal::MAX_K_DRAFTS) {
-            _mm_pause();
+    if (awaiting_fallback_token) {
+        awaiting_fallback_token = false;
+        last_accepted_token = external_input_token; 
+
+        pipeline_base_slots[current_cpu_tree] = kv_cache->AllocateSlot();
+        if (pipeline_base_slots[current_cpu_tree] == 0xFFFFFFFF) return PumpResult::OOM_ERROR;
+
+        //将外部提供的最新隐状态同步至保留的初始节点中
+        if (external_hidden_state) {
+            kv_cache->WriteTreeSlotFP32(pipeline_roots[current_cpu_tree], external_hidden_state);
         }
 
-        shared_proposal[cpu_tree]->state_flags.store(2, std::memory_order_release);
-        uint32_t gpu_tree = cpu_tree;
-        
-        uint32_t next_tree = 1 - cpu_tree; shared_proposal[next_tree]->Reset();
-        int32_t golden_idx = shared_proposal[gpu_tree]->golden_leaf_idx.load(std::memory_order_relaxed);
-        if (golden_idx < 0) golden_idx = DraftProposal::MAX_K_DRAFTS - 1;
-
-        roots[next_tree] = shared_proposal[gpu_tree]->slot_mapping[golden_idx];
-        base_slots[next_tree] = kv_cache->AllocateSlot();
-        uint32_t next_token = shared_proposal[gpu_tree]->draft_tokens[golden_idx];
-
-        global_generation.fetch_add(1, std::memory_order_release);
-
         FrontierTask next_seed;
-        
-        next_seed.gen_id = global_generation.load();
-        next_seed.parent_slot = roots[next_tree];
-        next_seed.alloc_slot = base_slots[next_tree];
-        next_seed.input_token = next_token;
+        next_seed.gen_id = global_generation.load(std::memory_order_relaxed);
+        next_seed.parent_slot = pipeline_roots[current_cpu_tree];
+        next_seed.alloc_slot = pipeline_base_slots[current_cpu_tree];
+        next_seed.input_token = last_accepted_token;
         next_seed.parent_tree_idx = -1;
         next_seed.branch_id = 0;
         next_seed.fusion_depth = 4;
-        next_seed.tree_idx = next_tree;
+        next_seed.tree_idx = current_cpu_tree;
         next_seed.is_golden = true;
+
         global_seed_task = next_seed;
         seed_claimed.store(0, std::memory_order_release);
+    }
 
-        while(shared_proposal[gpu_tree]->state_flags.load(std::memory_order_acquire) != 0) _mm_pause();
+    if (token_queue_head < token_queue_tail) {
+        *out_token = accepted_tokens_queue[token_queue_head++];
+        return PumpResult::YIELD_TOKEN;
+    }
 
-        int32_t accepted_idx = shared_proposal[gpu_tree]->accepted_tree_node_idx;
-        uint32_t num_gpu_drafts = shared_proposal[gpu_tree]->num_valid_drafts.load(std::memory_order_relaxed);
+    int spin_1 = 0;
+    while(shared_proposal[current_cpu_tree]->commit_counter.load(std::memory_order_acquire) < DraftProposal::MAX_K_DRAFTS) {
+        
+        //嗅探到Worker发生OOM立刻放弃等待并结算
+        if (shared_proposal[current_cpu_tree]->state_flags.load(std::memory_order_acquire) == 3) break;
+        int pause_count = 1 << std::min(spin_1 / 10, 8); 
+        for(int p = 0; p < pause_count; ++p) _mm_pause();
+        spin_1++;
+    }
 
-        if (accepted_idx == golden_idx) {
+    shared_proposal[current_cpu_tree]->state_flags.store(2, std::memory_order_release);
+    current_gpu_tree = current_cpu_tree;
+    uint32_t next_tree = 1 - current_cpu_tree;
+    
+    shared_proposal[next_tree]->Reset();
+    
+    //强制读取安全commit_counter
+    uint32_t total_drafts = shared_proposal[current_gpu_tree]->commit_counter.load(std::memory_order_acquire);
+    int32_t golden_idx = shared_proposal[current_gpu_tree]->golden_leaf_idx.load(std::memory_order_relaxed);
+    uint32_t next_token = 0;
 
-            uint32_t depth = 0;
+    //0节点OOM保护
+    if (total_drafts == 0) {
+        pipeline_roots[next_tree] = pipeline_base_slots[current_gpu_tree];
+        next_token = last_accepted_token;
+    } else {
+        if (golden_idx < 0 || golden_idx >= (int32_t)total_drafts) {
+            golden_idx = total_drafts - 1; 
+        }
+        pipeline_roots[next_tree] = shared_proposal[current_gpu_tree]->GetSlot(golden_idx);
+        next_token = shared_proposal[current_gpu_tree]->GetToken(golden_idx);
+    }
+
+    pipeline_base_slots[next_tree] = kv_cache->AllocateSlot();
+    if (pipeline_base_slots[next_tree] == 0xFFFFFFFF) return PumpResult::OOM_ERROR;
+    
+    global_generation.fetch_add(1, std::memory_order_release);
+
+    FrontierTask next_seed;
+    next_seed.gen_id = global_generation.load(std::memory_order_relaxed);
+    next_seed.parent_slot = pipeline_roots[next_tree];
+    next_seed.alloc_slot = pipeline_base_slots[next_tree];
+    next_seed.input_token = next_token;
+    next_seed.parent_tree_idx = -1;
+    next_seed.branch_id = 0;
+    next_seed.fusion_depth = 4;
+    next_seed.tree_idx = next_tree;
+    next_seed.is_golden = true;
+    
+    global_seed_task = next_seed;
+    seed_claimed.store(0, std::memory_order_release);
+
+    if (verifier_callback) {
+        verifier_callback(this->wrapper_context, (void*)shared_proposal[current_gpu_tree], verifier_user_data);
+    } else {
+        shared_proposal[current_gpu_tree]->accepted_tree_node_idx = (total_drafts > 0) ? golden_idx : -1;
+        shared_proposal[current_gpu_tree]->state_flags.store(0, std::memory_order_release);
+    }
+
+    int spin_2 = 0;
+    while(shared_proposal[current_gpu_tree]->state_flags.load(std::memory_order_acquire) != 0) {
+        int pause_count = 1 << std::min(spin_2 / 5, 8); 
+        for(int p = 0; p < pause_count; ++p) _mm_pause();
+        spin_2++;
+    }
+
+    int32_t accepted_idx = shared_proposal[current_gpu_tree]->accepted_tree_node_idx;
+
+    //使用commit_counter
+    uint32_t num_gpu_drafts = shared_proposal[current_gpu_tree]->commit_counter.load(std::memory_order_relaxed);
+    
+    token_queue_head = 0;
+    token_queue_tail = 0;
+    uint32_t path_buffer[DraftProposal::MAX_K_DRAFTS];
+    uint32_t path_len = 0;
+
+    if (accepted_idx == golden_idx && accepted_idx >= 0) {
+        int32_t curr = accepted_idx;
+        while(curr != -1) {
+            path_buffer[path_len++] = shared_proposal[current_gpu_tree]->GetToken(curr);
+            curr = shared_proposal[current_gpu_tree]->GetParent(curr);
+        }
+        for (int i = path_len - 1; i >= 0; --i) accepted_tokens_queue[token_queue_tail++] = path_buffer[i];
+        
+        uint32_t rej_slots[DraftProposal::MAX_K_DRAFTS + 2];
+        uint32_t rc = 0;
+        rej_slots[rc++] = pipeline_roots[current_gpu_tree];
+        rej_slots[rc++] = pipeline_base_slots[current_gpu_tree];
+        for(uint32_t i=0; i<num_gpu_drafts; ++i) {
+            if (i != (uint32_t)accepted_idx) rej_slots[rc++] = shared_proposal[current_gpu_tree]->GetSlot(i);
+        }
+        if (rc > 0) kv_cache->BulkFreeSlots(rej_slots, rc);
+        
+        current_cpu_tree = next_tree;
+
+    } else {
+        workers_finished.store(0, std::memory_order_release);
+        global_generation.fetch_add(1, std::memory_order_release);
+        uint32_t w_count = worker_cores.size();
+        int spin_3 = 0;
+        while(workers_finished.load(std::memory_order_acquire) < w_count) {
+            int pause_count = 1 << std::min(spin_3 / 10, 10);
+            for(int p = 0; p < pause_count; ++p) _mm_pause();
+            spin_3++;
+        }
+        
+        uint32_t abort_slots[DraftProposal::MAX_K_DRAFTS + 1];
+        uint32_t ac = 0;
+        abort_slots[ac++] = pipeline_base_slots[next_tree];
+        
+        //同步GC界限
+        uint32_t num_next = shared_proposal[next_tree]->commit_counter.load(std::memory_order_relaxed);
+        for(uint32_t i=0; i<num_next; ++i) abort_slots[ac++] = shared_proposal[next_tree]->GetSlot(i);
+        kv_cache->BulkFreeSlots(abort_slots, ac);
+
+        uint32_t rej_slots[DraftProposal::MAX_K_DRAFTS + 2];
+        uint32_t rc = 0;
+        
+        if (accepted_idx >= 0) {
             int32_t curr = accepted_idx;
-            
             while(curr != -1) {
-                depth++;
-                curr = shared_proposal[gpu_tree]->parent_indices[curr];
+                path_buffer[path_len++] = shared_proposal[current_gpu_tree]->GetToken(curr);
+                curr = shared_proposal[current_gpu_tree]->GetParent(curr);
             }
+            for (int i = path_len - 1; i >= 0; --i) accepted_tokens_queue[token_queue_tail++] = path_buffer[i];
             
-            step += (depth + 1);
-            
-            uint32_t rej_slots[DraftProposal::MAX_K_DRAFTS + 2];
-            uint32_t rc = 0;
-            
-            rej_slots[rc++] = roots[gpu_tree];
-            rej_slots[rc++] = base_slots[gpu_tree];
-            
-            for(uint32_t i=0; i<num_gpu_drafts; ++i) if (i != (uint32_t)accepted_idx) rej_slots[rc++] = shared_proposal[gpu_tree]->slot_mapping[i];
-            
-            kv_cache->BulkFreeSlots(rej_slots, rc);
-            cpu_tree = next_tree;
+            pipeline_roots[next_tree] = shared_proposal[current_gpu_tree]->GetSlot(accepted_idx);
+            last_accepted_token = shared_proposal[current_gpu_tree]->GetToken(accepted_idx);
 
+            rej_slots[rc++] = pipeline_roots[current_gpu_tree];
+            rej_slots[rc++] = pipeline_base_slots[current_gpu_tree];
+            for(uint32_t i=0; i<num_gpu_drafts; ++i) {
+                if (i != (uint32_t)accepted_idx) rej_slots[rc++] = shared_proposal[current_gpu_tree]->GetSlot(i);
+            }
         } else {
+            //只回收当前代有效块以保全原始根节点
+            pipeline_roots[next_tree] = pipeline_roots[current_gpu_tree]; 
+            rej_slots[rc++] = pipeline_base_slots[current_gpu_tree];
+            for(uint32_t i=0; i<num_gpu_drafts; ++i) rej_slots[rc++] = shared_proposal[current_gpu_tree]->GetSlot(i);
+        }
 
-            global_generation.fetch_add(1, std::memory_order_release);
-            
-            uint32_t target_gen = global_generation.load();
-            
-            for (size_t w = 0; w < worker_cores.size(); ++w) {
-                while(worker_gen[w].val.load(std::memory_order_acquire) < target_gen) {
-                    _mm_pause();
-                }
-            }
-            uint32_t abort_slots[DraftProposal::MAX_K_DRAFTS + 1];
-            uint32_t ac = 0;
-            
-            abort_slots[ac++] = base_slots[next_tree];
-            
-            uint32_t num_next = shared_proposal[next_tree]->num_valid_drafts.load(std::memory_order_relaxed);
-            
-            for(uint32_t i=0; i<num_next; ++i) abort_slots[ac++] = shared_proposal[next_tree]->slot_mapping[i];
-            
-            kv_cache->BulkFreeSlots(abort_slots, ac);
+        if (rc > 0) kv_cache->BulkFreeSlots(rej_slots, rc);
+        shared_proposal[next_tree]->Reset();
 
-            uint32_t rej_slots[DraftProposal::MAX_K_DRAFTS + 2];
-            uint32_t rc = 0;
+        if (accepted_idx >= 0) {
+            pipeline_base_slots[next_tree] = kv_cache->AllocateSlot();
+            if (pipeline_base_slots[next_tree] == 0xFFFFFFFF) return PumpResult::OOM_ERROR;
             
-            rej_slots[rc++] = roots[gpu_tree];
-            
-            if (accepted_idx >= 0) {
-
-                uint32_t depth = 0;
-                int32_t curr = accepted_idx;
-                
-                while(curr != -1) {
-                    depth++;
-                    curr = shared_proposal[gpu_tree]->parent_indices[curr];
-                }
-                
-                step += (depth + 1);
-                
-                rej_slots[rc++] = base_slots[gpu_tree];
-
-                for(uint32_t i=0; i<num_gpu_drafts; ++i) if (i != (uint32_t)accepted_idx) rej_slots[rc++] = shared_proposal[gpu_tree]->slot_mapping[i];
-                
-                roots[next_tree] = shared_proposal[gpu_tree]->slot_mapping[accepted_idx];
-                accepted_token = shared_proposal[gpu_tree]->draft_tokens[accepted_idx];
-                
-            } else {
-                step += 1; 
-                for(uint32_t i=0; i<num_gpu_drafts; ++i) rej_slots[rc++] = shared_proposal[gpu_tree]->slot_mapping[i];
-                roots[next_tree] = base_slots[gpu_tree]; 
-            }
-
-            kv_cache->BulkFreeSlots(rej_slots, rc);
-
-            shared_proposal[next_tree]->Reset();
-            base_slots[next_tree] = kv_cache->AllocateSlot();
-            next_seed.gen_id = global_generation.load();
-            next_seed.parent_slot = roots[next_tree];
-            next_seed.alloc_slot = base_slots[next_tree];
-            next_seed.input_token = accepted_token;
+            next_seed.gen_id = global_generation.load(std::memory_order_relaxed);
+            next_seed.parent_slot = pipeline_roots[next_tree];
+            next_seed.alloc_slot = pipeline_base_slots[next_tree];
+            next_seed.input_token = last_accepted_token;
             next_seed.parent_tree_idx = -1;
             next_seed.tree_idx = next_tree;
             next_seed.is_golden = true;
+            
             global_seed_task = next_seed;
             seed_claimed.store(0, std::memory_order_release);
-            
-            cpu_tree = next_tree;
+            current_cpu_tree = next_tree;
+        } else {
+            //挂起并通知外部沙箱补发Token与Hidden State
+            awaiting_fallback_token = true;
+            current_cpu_tree = next_tree;
+            return PumpResult::TREE_REJECTED;
         }
     }
+
+    if (token_queue_head < token_queue_tail) {
+        *out_token = accepted_tokens_queue[token_queue_head++];
+        return PumpResult::YIELD_TOKEN;
+    }
+
+    return PumpResult::TREE_REJECTED; 
 }

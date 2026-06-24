@@ -4,23 +4,27 @@ project(MICIUS LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(ARCH "native" CACHE STRING "")
-set(ALIGN "32" CACHE STRING "")
+set(ARCH "native" CACHE STRING "Target architecture optimization (e.g., native, haswell, znver3)")
+set(ALIGN "32" CACHE STRING "Loop alignment boundary")
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
-
-file(GLOB SRC_FILES CONFIGURE_DEPENDS
-    "tests/AIEmuMain.cpp"
-    "src/AI/*.cpp"
-)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 find_package(Threads REQUIRED)
 
-add_executable(my_target ${SRC_FILES})
+file(GLOB CORE_SRC_FILES CONFIGURE_DEPENDS 
+    "src/AI/*.cpp"
+    "src/*.cpp"
+)
 
-target_include_directories(my_target PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include/AI)
+add_library(micius_core STATIC ${CORE_SRC_FILES})
 
-target_compile_options(my_target PRIVATE
+target_include_directories(micius_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/AI
+)
+
+target_compile_options(micius_core PRIVATE
     -O3
     -g
     -fno-omit-frame-pointer
@@ -32,23 +36,26 @@ target_compile_options(my_target PRIVATE
     -falign-loops=${ALIGN}
     -mprefer-vector-width=256
     -fno-stack-protector
-    -pthread
 )
 
-target_link_options(my_target PRIVATE
+if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(micius_core PRIVATE -gcodeview)
+endif()
+
+add_executable(micius_sandbox tests/stress/AIEmuSandbox.cpp)
+
+target_link_libraries(micius_sandbox PRIVATE micius_core Threads::Threads)
+
+target_link_options(micius_sandbox PRIVATE
     -flto=thin
     -g
     -static-libgcc
     -static-libstdc++
     -fuse-ld=lld
-    -pthread
 )
 
-target_link_libraries(my_target PRIVATE Threads::Threads)
-
 if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(my_target PRIVATE -gcodeview)
-    target_link_options(my_target PRIVATE
-        -Wl,--pdb=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/my_target.pdb
+    target_link_options(micius_sandbox PRIVATE
+        -Wl,--pdb=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/micius_sandbox.pdb
     )
 endif()

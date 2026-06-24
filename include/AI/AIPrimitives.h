@@ -46,28 +46,49 @@ public:
 };
 
 //-------------------------------------------------------------------------
-//V4草稿提案
-//扩容至30个节点，适配Top-3的三层深度扇出 (1+3+9=13<30)
+//V5草稿提案与寻址优化
+//引入异步GC信箱 (Async GC Mailbox)及AoSoA混合拓扑与XADD原子操作加速
 //-------------------------------------------------------------------------
 //缓存一致性与真路径升级
+/*AoSoA核心块*/
+//每8个节点编织为一个128B的严格对齐块，共2条L1D缓存行
+//上半行64B存放高频规约所需的数据(tokens+parents)
+//下半行64B存放物理映射(slots)与防伪共享填充
+struct alignas(64) DraftNodeBlock8 {
+    uint32_t tokens[8];         //32B 
+    int32_t  parent_indices[8]; //+32B=64B (Cache Line 0)
+    
+    uint32_t phys_slots[8];     //32B
+    uint32_t padding[8];        //+32B=64B (Cache Line 1)保障不同Block间的绝对物理隔离
+};
+
 struct alignas(256) DraftProposal {
 
-    static constexpr uint32_t MAX_K_DRAFTS = 30;
+    static constexpr uint32_t MAX_K_DRAFTS = 64; 
+    static constexpr uint32_t NUM_BLOCKS = MAX_K_DRAFTS / 8;
 
-    uint32_t draft_tokens[MAX_K_DRAFTS];   
-    int32_t  parent_indices[MAX_K_DRAFTS]; 
-    uint32_t slot_mapping[MAX_K_DRAFTS];
+    //替换原有的SoA数组，采用AoSoA矩阵阵列
+    DraftNodeBlock8 blocks[NUM_BLOCKS];
 
-    alignas(64) std::atomic<uint32_t> num_valid_drafts; //仅作为Allocator
-    alignas(64) std::atomic<uint32_t> commit_counter;   //真正的数据就绪启动成员
+    alignas(64) std::atomic<uint32_t> num_valid_drafts;
+    alignas(64) std::atomic<uint32_t> commit_counter;
     alignas(64) int32_t accepted_tree_node_idx;
     alignas(64) std::atomic<uint32_t> state_flags;
     alignas(64) std::atomic<int32_t> golden_leaf_idx;
     
+    //异步GC Mailbox，隔离HQ的CAS冲突
+    alignas(64) std::atomic<uint32_t> gc_pending_count;
+    uint32_t gc_slots[MAX_K_DRAFTS + 2];
+
+    //内联数据访问器组
+    inline uint32_t GetToken(uint32_t idx) const { return blocks[idx / 8].tokens[idx % 8]; }
+    inline int32_t  GetParent(uint32_t idx) const { return blocks[idx / 8].parent_indices[idx % 8]; }
+    inline uint32_t GetSlot(uint32_t idx) const { return blocks[idx / 8].phys_slots[idx % 8]; }
+    
     inline void Reset()
     {
         num_valid_drafts.store(0, std::memory_order_relaxed);
-        commit_counter.store(0, std::memory_order_relaxed); //同步重置发令成员
+        commit_counter.store(0, std::memory_order_relaxed); 
         accepted_tree_node_idx = -1;
         golden_leaf_idx.store(0, std::memory_order_relaxed);
         state_flags.store(0, std::memory_order_relaxed);
@@ -75,25 +96,26 @@ struct alignas(256) DraftProposal {
 
     inline int32_t SpawnNodeConcurrent(uint32_t token, int32_t parent_idx, uint32_t phys_slot, bool is_golden = false)
     {
-        uint32_t current = num_valid_drafts.load(std::memory_order_relaxed);
+        //废除while+compare_exchange_weak，直接使用x86的LOCK XADD (fetch_add)
+        //将原先O(N*争抢次数)的缓存行失效广播强行压缩至O(N)单次命中
+        uint32_t current = num_valid_drafts.fetch_add(1, std::memory_order_acq_rel);
 
-        while (current < MAX_K_DRAFTS) {
-            if (num_valid_drafts.compare_exchange_weak(current, current + 1, std::memory_order_acquire, std::memory_order_relaxed)) {
-                
-                draft_tokens[current] = token;
-                parent_indices[current] = parent_idx;
-                slot_mapping[current] = phys_slot;
-                
-                // 【关键修复】在发令枪扣响前，将真路径标识安全落盘
-                if (is_golden) {
-                    golden_leaf_idx.store(current, std::memory_order_relaxed);
-                }
-                
-                // Release 屏障，保证上述所有写入（包括 golden_leaf_idx）对 HQ 绝对可见
-                commit_counter.fetch_add(1, std::memory_order_release);
-                
-                return current;
+        if (current < MAX_K_DRAFTS) {
+            
+            //将线性索引映射至AoSoA二维坐标
+            uint32_t b_idx = current / 8;
+            uint32_t l_idx = current % 8;
+
+            blocks[b_idx].tokens[l_idx] = token;
+            blocks[b_idx].parent_indices[l_idx] = parent_idx;
+            blocks[b_idx].phys_slots[l_idx] = phys_slot;
+            
+            if (is_golden) {
+                golden_leaf_idx.store(current, std::memory_order_relaxed);
             }
+            
+            commit_counter.fetch_add(1, std::memory_order_release);
+            return current;
         }
         return -1;
     }
