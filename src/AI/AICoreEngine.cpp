@@ -164,6 +164,9 @@ AIEngineFront::AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t h_
         ctx->prng_state = (uint32_t)(1337 + i * 19);
 
         if (ctx->prng_state == 0) ctx->prng_state = 1;
+
+        ctx->tasks_processed = 0;
+        ctx->tasks_stolen = 0;
         
         std::memset(ctx->workspace_i8, 0, hidden_dim * sizeof(int8_t));
         std::memset(ctx->logits, 0, 32000 * sizeof(float));
@@ -228,7 +231,10 @@ void AIEngineFront::WorkerRoutine(int w_idx)
             }
         }
 
-        if(!got) got = local_queues[w_idx].pop_bottom(task);
+        if(!got) {
+            got = local_queues[w_idx].pop_bottom(task);
+            if (got) ctx->tasks_processed++; 
+        }
         
         if(!got && worker_cores.size() > 1) {
             /*Xorshift32极速伪随机发生器*/
@@ -240,6 +246,8 @@ void AIEngineFront::WorkerRoutine(int w_idx)
             size_t victim = ctx->prng_state % worker_cores.size();
             if (victim != (size_t)w_idx) {
                 got = local_queues[victim].steal_top(task);
+                //记录窃取数
+                if (got) ctx->tasks_stolen++; 
             }
         }
 
@@ -487,6 +495,7 @@ PumpResult AIEngineFront::PumpSingleToken(uint32_t external_input_token, const f
 
     if (token_queue_head < token_queue_tail) {
         *out_token = accepted_tokens_queue[token_queue_head++];
+        total_tokens_generated.fetch_add(1, std::memory_order_relaxed);
         return PumpResult::YIELD_TOKEN;
     }
 
@@ -653,14 +662,17 @@ PumpResult AIEngineFront::PumpSingleToken(uint32_t external_input_token, const f
             //挂起并通知外部沙箱补发Token与Hidden State
             awaiting_fallback_token = true;
             current_cpu_tree = next_tree;
+            tree_reject_count.fetch_add(1, std::memory_order_relaxed);
             return PumpResult::TREE_REJECTED;
         }
     }
 
     if (token_queue_head < token_queue_tail) {
         *out_token = accepted_tokens_queue[token_queue_head++];
+        total_tokens_generated.fetch_add(1, std::memory_order_relaxed);
         return PumpResult::YIELD_TOKEN;
     }
 
-    return PumpResult::TREE_REJECTED; 
+    tree_reject_count.fetch_add(1, std::memory_order_relaxed);
+    return PumpResult::TREE_REJECTED;
 }

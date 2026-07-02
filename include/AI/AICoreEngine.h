@@ -17,6 +17,10 @@ struct alignas(64) WorkerContext {
     uint32_t tlab_slots[16];
     uint32_t tlab_count;
     uint32_t prng_state;
+
+    //微观的遥测探针
+    uint32_t tasks_processed = 0;
+    uint32_t tasks_stolen = 0;
 };
 
 //L1优化的Chase-Lev无锁双端队列
@@ -156,6 +160,10 @@ public:
 
     int recommended_shadow_core; //暴露的影子线程绑核建议
 
+    //宏观的负载探针
+    alignas(64) std::atomic<uint32_t> total_tokens_generated{0};
+    alignas(64) std::atomic<uint32_t> tree_reject_count{0};
+
     AIEngineFront(size_t pool_size, uint32_t max_seq_len, uint32_t hidden_dim);
     ~AIEngineFront();
 
@@ -187,5 +195,10 @@ public:
     {
         return kv_cache;
     }
+
+    //解除Private访问限制Getters
+    inline size_t GetWorkerCount() const { return worker_cores.size(); }
+    inline WorkerContext* GetWorkerContext(size_t idx) const { return worker_ctxs[idx]; }
+    inline int GetWorkerCoreId(size_t idx) const { return worker_cores[idx]; }
 
 };

@@ -93,4 +93,36 @@ void Micius_AcceptTreeNode(MiciusDraftTree* tree, int32_t node_idx)
     proposal->state_flags.store(0, std::memory_order_release);
 }
 
+void Micius_GetRuntimeStats(MiciusContext* ctx, MiciusRuntimeStats* out_stats)
+{
+    if (!ctx || !ctx->core_engine || !out_stats) return;
+
+    out_stats->total_tokens_generated = ctx->core_engine->total_tokens_generated.load(std::memory_order_relaxed);
+    out_stats->tree_reject_count = ctx->core_engine->tree_reject_count.load(std::memory_order_relaxed);
+    
+    //粗略获取KV位线
+    /*若要绝对精确可在Allocate或Free时维护原子计数*/
+    out_stats->kv_slots_total = ctx->config.max_seq_len;
+    out_stats->kv_slots_used = ctx->core_engine->GetKVCache()->GetUsedSlotsCount();
+}
+
+uint32_t Micius_GetWorkerCount(MiciusContext* ctx)
+{
+    if (!ctx || !ctx->core_engine) return 0;
+    return (uint32_t)ctx->core_engine->GetWorkerCount();
+}
+
+bool Micius_GetWorkerInfo(MiciusContext* ctx, uint32_t worker_index, MiciusWorkerInfo* out_info)
+{
+    if (!ctx || !ctx->core_engine || !out_info) return false;
+    if (worker_index >= ctx->core_engine->GetWorkerCount()) return false;
+
+    WorkerContext* w_ctx = ctx->core_engine->GetWorkerContext(worker_index);
+    out_info->core_id = ctx->core_engine->GetWorkerCoreId(worker_index);
+    out_info->tasks_processed = w_ctx->tasks_processed;
+    out_info->tasks_stolen = w_ctx->tasks_stolen;
+    
+    return true;
+}
+
 } //extern "C"

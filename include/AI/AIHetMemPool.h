@@ -1,5 +1,8 @@
 #pragma once
+
 #include "AIPrimitives.h"
+
+#include <atomic>
 #include <vector>
 #include <cstring> //for memcpy
 
@@ -127,6 +130,9 @@ private:
     alignas(64) std::atomic<uint64_t> free_head;
     uint32_t* next_ptrs; //单向链表指针池
 
+    //并发无锁统计KV占用量供遥测读取
+    alignas(64) std::atomic<uint32_t> used_slots{0};
+
 public:
 
     KVCacheRingBuffer(uint32_t seq_len, uint32_t dim)
@@ -153,6 +159,12 @@ public:
         if (next_ptrs) _mm_free(next_ptrs);
     }
 
+    //获取占用槽位数量
+    inline uint32_t GetUsedSlotsCount() const
+    {
+        return used_slots.load(std::memory_order_relaxed);
+    }
+
     //O(1)复杂度的无锁申请
     inline uint32_t AllocateSlot() {
         uint64_t head = free_head.load(std::memory_order_acquire);
@@ -164,6 +176,7 @@ public:
             uint64_t new_head = ((head >> 32) + 1) << 32 | next; //版本号递增
             
             if (free_head.compare_exchange_weak(head, new_head, std::memory_order_release, std::memory_order_acquire)) {
+                used_slots.fetch_add(1, std::memory_order_relaxed);
                 return slot;
             }
         }
@@ -188,6 +201,7 @@ public:
             
             uint64_t new_head = ((head >> 32) + 1) << 32 | iter;
             if (free_head.compare_exchange_weak(head, new_head, std::memory_order_release, std::memory_order_acquire)) {
+                used_slots.fetch_add(allocated, std::memory_order_relaxed);
                 return allocated;
             }
         }
@@ -204,6 +218,7 @@ public:
             uint64_t new_head = ((head >> 32) + 1) << 32 | slot_idx;
             
             if (free_head.compare_exchange_weak(head, new_head, std::memory_order_release, std::memory_order_acquire)) {
+                used_slots.fetch_sub(1, std::memory_order_relaxed);
                 break;
             }
         }
@@ -238,7 +253,10 @@ public:
         while (true) {
             next_ptrs[slots[count - 1]] = static_cast<uint32_t>(head & 0xFFFFFFFF);
             uint64_t new_head = ((head >> 32) + count) << 32 | slots[0];
-            if (free_head.compare_exchange_weak(head, new_head, std::memory_order_release, std::memory_order_acquire)) break;
+            if (free_head.compare_exchange_weak(head, new_head, std::memory_order_release, std::memory_order_acquire)) {
+                used_slots.fetch_sub(count, std::memory_order_relaxed);
+                break;
+            }
         }
     }
 

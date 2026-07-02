@@ -64,6 +64,26 @@ uint32_t Micius_GetTreeValidCount(MiciusDraftTree* tree);
 //预言验证完成后，提交被接受的节点索引（传入-1表示全盘拒绝）并交回控制权
 void Micius_AcceptTreeNode(MiciusDraftTree* tree, int32_t node_idx);
 
+//遥测与监控API
+//引擎全局计数器
+typedef struct {
+    uint32_t total_tokens_generated; //总产出Token数
+    uint32_t tree_reject_count;      //推测树被全盘拒绝的次数
+    uint32_t kv_slots_used;          //当前占用的KV槽数
+    uint32_t kv_slots_total;         //内存池总KV槽容量
+} MiciusRuntimeStats;
+
+//Worker阵列元数据
+typedef struct {
+    int core_id;              //绑定的物理/逻辑核心ID
+    uint32_t tasks_processed; //本地队列处理的任务数
+    uint32_t tasks_stolen;    //窃取的任务数（压力指示器）
+} MiciusWorkerInfo;
+
+//遥测接口
+void Micius_GetRuntimeStats(MiciusContext* ctx, MiciusRuntimeStats* out_stats);
+uint32_t Micius_GetWorkerCount(MiciusContext* ctx);
+bool Micius_GetWorkerInfo(MiciusContext* ctx, uint32_t worker_index, MiciusWorkerInfo* out_info);
 
 #ifdef __cplusplus
 }
