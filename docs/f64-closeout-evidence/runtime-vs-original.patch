@@ -1,0 +1,1445 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -42,6 +42,21 @@
+        "Use the prevalidated GEMV entry only for models owned by the private V1 binding boundary" OFF)
+ option(MICIUS_REFERENCE_GEMV_PREPARED_F64
+        "Prepare one validated F64 activation snapshot for reference row-pair GEMV" OFF)
++set(MICIUS_PW2_SELECTION "NONE" CACHE STRING "PW2 experimental weight snapshot: NONE, QKV, O")
++set_property(CACHE MICIUS_PW2_SELECTION PROPERTY STRINGS NONE QKV O)
++set(MICIUS_PW2_BUDGET_MIB "512" CACHE STRING "Maximum extra raw F32 weight payload per binding")
++if(NOT MICIUS_PW2_BUDGET_MIB MATCHES "^(0|[1-9][0-9]*)$" OR MICIUS_PW2_BUDGET_MIB GREATER 1048576)
++    message(FATAL_ERROR "PW2 budget must be an integer in [0,1048576] MiB")
++endif()
++if(MICIUS_PW2_SELECTION STREQUAL "NONE")
++    set(MICIUS_PW2_MODE 0)
++elseif(MICIUS_PW2_SELECTION STREQUAL "QKV")
++    set(MICIUS_PW2_MODE 1)
++elseif(MICIUS_PW2_SELECTION STREQUAL "O")
++    set(MICIUS_PW2_MODE 2)
++else()
++    message(FATAL_ERROR "PW2 selection must be NONE, QKV or O")
++endif()
+ option(MICIUS_REFERENCE_GEMV_COMPACT_SCALES
+        "Store one private F32 scale per validated Q8_32 block for reference GEMV" OFF)
+ option(MICIUS_REFERENCE_ATTENTION_VALUE_AVX2
+@@ -50,6 +65,11 @@
+        "Convert each reference attention query head to exact F64 once before its key scan" OFF)
+ option(MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD
+        "Evaluate four ordered reference attention key rows while sharing each query conversion" OFF)
++
++if(MICIUS_PW2_MODE AND (NOT MICIUS_REFERENCE_GEMV_PREPARED_F64 OR
++   NOT MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES OR MICIUS_REFERENCE_GEMV_COMPACT_SCALES))
++    message(FATAL_ERROR "PW2 requires r1 prepared input and V1 descriptor scales; compact OFF")
++endif()
+ 
+ if(MICIUS_REFERENCE_GEMV_PREPARED_F64 AND
+    (NOT MICIUS_REFERENCE_GEMV_AVX2 OR NOT MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2))
+@@ -241,6 +261,9 @@
+ # uses separate rounding too, including scalar tails. Strict options are source
+ # options and therefore follow target/global optimization options.
+ set(MICIUS_GEMV_STRICT_SOURCES
++    "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/ReferenceF32WeightGEMVAVX2.cpp"
++    "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/PreparedGEMVWeights.cpp"
++    "${CMAKE_CURRENT_SOURCE_DIR}/tests/prepared_weight_tests.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/ReferenceGEMVAVX2.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference/r8_q8_frozen.cpp"
+     "${CMAKE_CURRENT_SOURCE_DIR}/tests/prepared_gemv_tests.cpp")
+@@ -255,6 +278,8 @@
+ 
+ add_library(micius_core STATIC ${MICIUS_CORE_SOURCES})
+ add_library(MICIUS::core ALIAS micius_core)
++target_compile_definitions(micius_core PRIVATE
++    MICIUS_PW2_MODE=${MICIUS_PW2_MODE} MICIUS_PW2_BUDGET_MIB=${MICIUS_PW2_BUDGET_MIB})
+ 
+ if(MICIUS_BENCHMARK_ITT)
+     # Compile the SDK C stub with this toolchain, avoiding an MSVC/MinGW
+@@ -548,6 +573,8 @@
+     micius_add_contract_test(prepared_gemv_tests
+         "${CMAKE_CURRENT_SOURCE_DIR}/tests/prepared_gemv_tests.cpp")
+     target_sources(prepared_gemv_tests PRIVATE tests/reference/r8_q8_frozen.cpp)
++    micius_add_contract_test(prepared_weight_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/prepared_weight_tests.cpp")
++    target_sources(prepared_weight_tests PRIVATE tests/reference/r8_q8_frozen.cpp)
+     micius_add_contract_test(q8_32_gemv_tests
+         "${CMAKE_CURRENT_SOURCE_DIR}/tests/q8_32_gemv_tests.cpp")
+     micius_add_contract_test(attention_value_avx2_tests
+@@ -563,3 +590,23 @@
+         target_link_libraries(benchmark_itt_roi_tests PRIVATE micius_ittnotify)
+     endif()
+ endif()
++
++# D1 isolated diagnostics. OFF remains the uninstrumented NONE baseline.
++option(MICIUS_DECODE_PROFILE "Compile D1 decode category measurement" OFF)
++if(MICIUS_DECODE_PROFILE)
++    if(NOT MICIUS_PW2_SELECTION STREQUAL "NONE" OR
++       NOT MICIUS_REFERENCE_GEMV_PREPARED_F64 OR
++       NOT MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES OR
++       MICIUS_REFERENCE_GEMV_COMPACT_SCALES OR MICIUS_ENABLE_FAST_MATH OR MICIUS_BENCHMARK_ITT)
++        message(FATAL_ERROR "D1 requires NONE, prepared input, prevalidated descriptor scales, strict math and ITT OFF")
++    endif()
++    target_compile_definitions(micius_core PRIVATE MICIUS_DECODE_PROFILE=1)
++endif()
++if(BUILD_TESTING)
++    micius_add_contract_test(decode_profile_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/decode_profile_tests.cpp")
++    target_compile_definitions(decode_profile_tests PRIVATE MICIUS_DECODE_PROFILE=1)
++    if(MICIUS_DECODE_PROFILE)
++        micius_add_contract_test(d1_runtime_contract_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/d1_runtime_contract_tests.cpp")
++        target_compile_definitions(d1_runtime_contract_tests PRIVATE MICIUS_DECODE_PROFILE=1)
++    endif()
++endif()
+--- a/src/micius_runtime.cpp
++++ b/src/micius_runtime.cpp
+@@ -19,6 +19,13 @@
+     MiciusConfig config{};
+     std::unique_ptr<AIEngineFront> core_engine;
+ };
++
++micius::internal::PreparedWeightStats micius::internal::GetPreparedWeightStats(
++    const MiciusContext* context) noexcept
++{
++    return context && context->core_engine
++        ? context->core_engine->GetPreparedWeightStats() : PreparedWeightStats{};
++}
+ 
+ namespace {
+ 
+--- a/src/app/MiciusShell.cpp
++++ b/src/app/MiciusShell.cpp
+@@ -1,6 +1,9 @@
+ #include "MiciusShell.h"
+ #include "MiciusTensorCodec.h"
+ #include "BenchmarkIttRoi.h"
++#include "AI/DecodeProfile.h"
++#include "AI/PreparedGEMVWeights.h"
++#include <fstream>
+ 
+ #include <iostream>
+ #include <sstream>
+@@ -438,19 +441,21 @@
+ {
+     struct BenchmarkOptions {
+         std::string model_path;
++        std::string pw2_parity_path;
+         uint64_t warmup_steps = 0;
+         uint64_t timed_steps = 0;
+         uint32_t cpu_id = 0;
+         bool cpu_explicit = false;
+         bool steps_explicit = false;
+         bool itt_roi = false;
++        bool d1_profile = false;
+         std::vector<uint32_t> prompt_tokens;
+     } options;
+ 
+     const auto print_usage = []() {
+         std::cout
+             << "Usage: micius_cli --model-benchmark --model PATH --warmup N "
+-               "--steps N [--cpu N] [--itt-roi] --token ID [--token ID ...]\n";
++               "--steps N [--cpu N] [--itt-roi] [--d1-profile] [--pw2-parity PATH] --token ID [--token ID ...]\n";
+     };
+     const auto fail = [&](const std::string& message) {
+         std::cout << "status=FAIL\nerror=" << message << '\n';
+@@ -475,6 +480,12 @@
+             const std::string* value = require_value(&i, "--model");
+             if (!value) return 2;
+             options.model_path = *value;
++        } else if (argument == "--pw2-parity") {
++            const std::string* value = require_value(&i, "--pw2-parity");
++            if (!value || value->empty()) return fail("--pw2-parity requires a path");
++            options.pw2_parity_path = *value;
++        } else if (argument == "--d1-profile") {
++            options.d1_profile = true;
+         } else if (argument == "--itt-roi") {
+             options.itt_roi = true;
+         } else if (argument == "--warmup") {
+@@ -518,12 +529,39 @@
+     if (options.model_path.empty()) return fail("--model is required");
+     if (!options.steps_explicit) return fail("--steps is required");
+     if (options.prompt_tokens.empty()) return fail("at least one --token is required");
+-
++    if (!options.pw2_parity_path.empty() && (options.prompt_tokens.size()!=1 ||
++        options.warmup_steps!=0 || options.itt_roi))
++        return fail("PW2 parity uses one repeated fixed token, warmup=0, ITT disabled");
++
++    if (options.d1_profile && !micius::d1::compiled)
++        return fail("D1 profile is not compiled in this executable");
++    if (options.d1_profile && options.itt_roi)
++        return fail("D1 and ITT must not be combined");
++    std::cout << "d1_profile_compiled=" << micius::d1::compiled
++              << "\nd1_profile_requested=" << options.d1_profile << '\n';
+     micius::benchmark::IttRoi itt_roi;
+     if (const char* error = itt_roi.Prepare(options.itt_roi)) return fail(error);
+ 
++    // Pin before loading too: preparation timing and first-touch use the same CPU.
++    if (options.cpu_explicit) {
++        int load_cpu = -1; std::string error;
++        if (!PinBenchmarkThread(options.cpu_id, &load_cpu, &error)) return fail(error);
++    }
++    const auto load_begin = std::chrono::steady_clock::now();
+     CmdLoad(this, &ctx, std::vector<std::string>{"load", options.model_path});
+     if (!ctx.engine_ctx) return fail("model load or V1 tensor binding failed");
++    const double model_load_seconds = std::chrono::duration<double>(
++        std::chrono::steady_clock::now() - load_begin).count();
++    const auto weight_stats = micius::internal::GetPreparedWeightStats(ctx.engine_ctx);
++    std::cout << std::setprecision(12)
++        << "pw2_revision=pw2-2026-09-20\n"
++        << "pw2_selection=" << weight_stats.selection << '\n'
++        << "pw2_status=" << weight_stats.status << '\n'
++        << "pw2_matrices=" << weight_stats.matrices << '\n'
++        << "pw2_budget_bytes=" << weight_stats.budget_bytes << '\n'
++        << "pw2_extra_bytes=" << weight_stats.extra_bytes << '\n'
++        << "pw2_preparation_seconds=" << weight_stats.preparation_seconds << '\n'
++        << "model_load_and_bind_seconds=" << model_load_seconds << '\n';
+ 
+     for (uint32_t token : options.prompt_tokens) {
+         if (token >= ctx.engine_config.vocab_size) {
+@@ -556,6 +594,43 @@
+ 
+     if (!Micius_ResetEngineV1(ctx.engine_ctx)) {
+         return fail(BenchmarkApiError("Micius_ResetEngineV1"));
++    }
++
++    if (!options.pw2_parity_path.empty()) {
++        // Separate correctness run: full logits, fixed inputs, no throughput sample.
++        std::ofstream trace(options.pw2_parity_path, std::ios::binary | std::ios::trunc);
++        if (!trace) return fail("cannot create PW2 parity trace");
++        std::vector<float> logits(ctx.engine_config.vocab_size);
++        const uint32_t vocabulary = ctx.engine_config.vocab_size;
++        trace.write(reinterpret_cast<const char*>(&vocabulary), sizeof(vocabulary));
++        const uint32_t token = options.prompt_tokens.front();
++        micius::d1::Session d1_session(options.d1_profile);
++        if (!d1_session.valid()) return fail("D1 session already active");
++        for (uint64_t step=0; step<options.timed_steps; ++step) {
++            uint32_t output=0;
++            if (Micius_DecodeOneV1(ctx.engine_ctx, token, &output)!=MICIUS_STATE_YIELD_TOKEN ||
++                !Micius_CopyLastLogitsV1(ctx.engine_ctx, logits.data(), logits.size()))
++                return fail(BenchmarkApiError("PW2 fixed-input decode/logits"));
++            trace.write(reinterpret_cast<const char*>(&token), sizeof(token));
++            trace.write(reinterpret_cast<const char*>(&output), sizeof(output));
++            trace.write(reinterpret_cast<const char*>(logits.data()),
++                static_cast<std::streamsize>(logits.size()*sizeof(float)));
++            if (!trace) return fail("PW2 trace write failed");
++        }
++        if (!d1_session.stop()) return fail("D1 scope did not finish");
++        if (options.d1_profile) micius::d1::Emit(std::cout, "parity", 0,
++            ctx.engine_config.num_layers, options.timed_steps);
++        trace.close();
++        if (!trace) return fail("PW2 trace close failed");
++        const int end_cpu=CurrentProcessorForBenchmark();
++        if (options.cpu_explicit && end_cpu!=static_cast<int>(options.cpu_id))
++            return fail("PW2 parity left requested CPU");
++        std::cout << "mode=pw2_fixed_token_full_logits\n"
++            << "pw2_trace_steps=" << options.timed_steps << '\n'
++            << "pw2_trace_token=" << token << '\n'
++            << "worker_start_cpu_0=" << observed_cpu << '\n'
++            << "worker_end_cpu_0=" << end_cpu << "\nstatus=PASS\n";
++        return 0;
+     }
+ 
+     std::vector<uint32_t> timed_tokens(static_cast<size_t>(options.timed_steps));
+@@ -620,6 +695,8 @@
+         << '\n'
+         << "VTUNE_ROI_BEGIN\n" << std::flush;
+ 
++    micius::d1::Session d1_session(options.d1_profile);
++    if (!d1_session.valid()) return fail("D1 session already active");
+     itt_roi.Begin();
+     const auto begin = std::chrono::steady_clock::now();
+     uint64_t completed_steps = 0;
+@@ -634,6 +711,7 @@
+     }
+     const auto end = std::chrono::steady_clock::now();
+     itt_roi.End();
++    if (!d1_session.stop()) return fail("D1 scope did not finish");
+     const int end_cpu = CurrentProcessorForBenchmark();
+     std::cout << "VTUNE_ROI_END\n";
+ 
+@@ -675,6 +753,9 @@
+         << "final_token=" << current_token << '\n'
+         << "token_checksum=0x" << std::hex << token_hash << '\n'
+         << "last_logits_checksum=0x" << logits_hash << std::dec << '\n';
++    if (options.d1_profile) micius::d1::Emit(std::cout, "decode",
++        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end-begin).count()),
++        ctx.engine_config.num_layers, completed_steps);
+     return 0;
+ }
+ 
+--- /dev/null
++++ b/src/AI/PreparedGEMVWeights.cpp
+@@ -0,0 +1,46 @@
++#include "PreparedGEMVWeights.h"
++#include <limits>
++#include <new>
++
++namespace micius::internal {
++struct WeightPreparationAccess {
++    static void Build(const WeightSource& source, PreparedF32GEMVWeights& result) {
++        // Default initialization avoids an unnecessary zero-fill pass.
++        std::unique_ptr<float[]> data(new float[source.raw.size()]);
++        for (size_t i = 0; i < source.raw.size(); ++i)
++            data[i] = static_cast<float>(source.raw[i]);
++        result.data_ = std::move(data);
++        result.rows_ = source.rows;
++        result.cols_ = source.cols;
++    }
++};
++
++WeightPrepareResult PrepareF32WeightGroup(
++    std::span<const WeightSource> sources, uint64_t budget_bytes,
++    std::vector<PreparedF32GEMVWeights>& out, uint64_t& bytes) noexcept
++{
++    out.clear(); bytes = 0;
++    uint64_t required = 0;
++    if (sources.empty()) return WeightPrepareResult::INVALID;
++    for (const auto& source : sources) {
++        const uint64_t count = uint64_t{source.rows} * source.cols;
++        if (!source.rows || !source.cols || !source.raw.data() ||
++            count != source.raw.size() ||
++            count > std::numeric_limits<size_t>::max() / sizeof(float) ||
++            count > (std::numeric_limits<uint64_t>::max() - required) / sizeof(float))
++            return WeightPrepareResult::INVALID;
++        required += count * sizeof(float);
++    }
++    if (required > budget_bytes) return WeightPrepareResult::BUDGET;
++    try {
++        std::vector<PreparedF32GEMVWeights> candidate(sources.size());
++        for (size_t i = 0; i < sources.size(); ++i)
++            WeightPreparationAccess::Build(sources[i], candidate[i]);
++        out.swap(candidate);
++        bytes = required;
++        return WeightPrepareResult::READY;
++    } catch (const std::bad_alloc&) {
++        return WeightPrepareResult::ALLOCATION;
++    }
++}
++} // namespace micius::internal
+--- /dev/null
++++ b/src/AI/ReferenceF32WeightGEMVAVX2.cpp
+@@ -0,0 +1,390 @@
++// PW2: derived arithmetic from r1, with raw integer-valued float weights, converted exactly to double on load.
++// Q8 runtime and frozen oracle remain in their original, unmodified files.
++#include "PreparedGEMVWeights.h"
++#include "PreparedGEMVInput.h"
++#include <immintrin.h>
++#include <cmath>
++#include <cstdint>
++#include <limits>
++#if defined(__FAST_MATH__) || (defined(__FINITE_MATH_ONLY__) && __FINITE_MATH_ONLY__)
++#error "PW2 requires strict floating point"
++#endif
++#if defined(__clang__)
++#pragma clang fp contract(off)
++#pragma clang fp reassociate(off)
++#elif defined(__GNUC__)
++#pragma GCC optimize ("fp-contract=off")
++#endif
++namespace {
++inline float Q8ScaleValue(const QuantDescriptor* s, size_t i) noexcept { return s[i].scale; }
++inline __m256d AccumulateF32Weightx4(__m256d acc, const double* x, const float* w, __m256d s) noexcept {
++    const __m256d product = _mm256_mul_pd(_mm256_loadu_pd(x), _mm256_cvtps_pd(_mm_loadu_ps(w)));
++    return _mm256_add_pd(acc, _mm256_mul_pd(product, s));
++}
++inline void AccumulateRowPairF32Weightx4(__m256d& a, __m256d& b, const double* x,
++    const float* w0, const float* w1, __m256d s0, __m256d s1) noexcept {
++    const __m256d input = _mm256_loadu_pd(x);
++    const __m256d p0 = _mm256_mul_pd(input, _mm256_cvtps_pd(_mm_loadu_ps(w0)));
++    a = _mm256_add_pd(a, _mm256_mul_pd(p0, s0));
++    const __m256d p1 = _mm256_mul_pd(input, _mm256_cvtps_pd(_mm_loadu_ps(w1)));
++    b = _mm256_add_pd(b, _mm256_mul_pd(p1, s1));
++}
++inline double ReduceAddPD(__m256d values) noexcept {
++    const __m128d low = _mm256_castpd256_pd128(values);
++    const __m128d high = _mm256_extractf128_pd(values, 1);
++    const __m128d pair_sum = _mm_add_pd(low, high);
++    const __m128d upper = _mm_unpackhi_pd(pair_sum, pair_sum);
++    return _mm_cvtsd_f64(_mm_add_sd(pair_sum, upper));
++}
++template <bool ValidateScales, bool ValidateInput = true,
++          typename ScaleStorage, typename Input>
++Q8_32_GEMVStatus F32WeightSingle(
++    const float* quant_weights,
++    const ScaleStorage* scales,
++    const Input* input,
++    float* output,
++    uint32_t input_dim,
++    uint32_t output_dim) noexcept
++{
++    if (!quant_weights || !scales || !input || !output ||
++        input_dim == 0 || output_dim == 0) {
++        return Q8_32_GEMVStatus::INVALID_ARGUMENT;
++    }
++
++    const size_t input_size = static_cast<size_t>(input_dim);
++    const size_t output_size = static_cast<size_t>(output_dim);
++    const uint32_t blocks_per_row =
++        input_dim / 32U + (input_dim % 32U != 0U ? 1U : 0U);
++    const size_t block_count = static_cast<size_t>(blocks_per_row);
++    if (output_size > std::numeric_limits<size_t>::max() / input_size ||
++        output_size > std::numeric_limits<size_t>::max() / block_count) {
++        return Q8_32_GEMVStatus::INVALID_ARGUMENT;
++    }
++
++    if constexpr (ValidateInput) {
++        for (uint32_t column = 0; column < input_dim; ++column) {
++            if (!std::isfinite(input[column])) {
++                return Q8_32_GEMVStatus::NUMERIC_ERROR;
++            }
++        }
++    }
++
++    const uint32_t full_blocks = input_dim / 32U;
++    const uint32_t tail_columns = input_dim % 32U;
++
++    for (uint32_t row = 0; row < output_dim; ++row) {
++        const size_t weight_row = static_cast<size_t>(row) * input_size;
++        const size_t scale_row = static_cast<size_t>(row) * block_count;
++        __m256d accumulator0 = _mm256_setzero_pd();
++        __m256d accumulator1 = _mm256_setzero_pd();
++        __m256d accumulator2 = _mm256_setzero_pd();
++        __m256d accumulator3 = _mm256_setzero_pd();
++
++        for (uint32_t block = 0; block < full_blocks; ++block) {
++            if constexpr (ValidateScales) {
++                const QuantDescriptor& descriptor = scales[scale_row + block];
++                if (descriptor.zero_point != 0 || !std::isfinite(descriptor.scale)) {
++                    return Q8_32_GEMVStatus::INVALID_MODEL;
++                }
++            }
++
++            const size_t column = static_cast<size_t>(block) * 32U;
++            const float* weight_block = quant_weights + weight_row + column;
++            const Input* input_block = input + column;
++            const __m256d scale = _mm256_set1_pd(static_cast<double>(
++                Q8ScaleValue(scales, scale_row + block)));
++            accumulator0 = AccumulateF32Weightx4(
++                accumulator0, input_block + 0, weight_block + 0, scale);
++            accumulator1 = AccumulateF32Weightx4(
++                accumulator1, input_block + 4, weight_block + 4, scale);
++            accumulator2 = AccumulateF32Weightx4(
++                accumulator2, input_block + 8, weight_block + 8, scale);
++            accumulator3 = AccumulateF32Weightx4(
++                accumulator3, input_block + 12, weight_block + 12, scale);
++            accumulator0 = AccumulateF32Weightx4(
++                accumulator0, input_block + 16, weight_block + 16, scale);
++            accumulator1 = AccumulateF32Weightx4(
++                accumulator1, input_block + 20, weight_block + 20, scale);
++            accumulator2 = AccumulateF32Weightx4(
++                accumulator2, input_block + 24, weight_block + 24, scale);
++            accumulator3 = AccumulateF32Weightx4(
++                accumulator3, input_block + 28, weight_block + 28, scale);
++        }
++
++        const __m256d vector_sum = _mm256_add_pd(
++            _mm256_add_pd(accumulator0, accumulator1),
++            _mm256_add_pd(accumulator2, accumulator3));
++        double sum = ReduceAddPD(vector_sum);
++
++        if (tail_columns != 0U) {
++            const uint32_t block = full_blocks;
++            if constexpr (ValidateScales) {
++                const QuantDescriptor& descriptor = scales[scale_row + block];
++                if (descriptor.zero_point != 0 || !std::isfinite(descriptor.scale)) {
++                    return Q8_32_GEMVStatus::INVALID_MODEL;
++                }
++            }
++            const uint32_t begin = block * 32U;
++            const double scale = static_cast<double>(
++                Q8ScaleValue(scales, scale_row + block));
++            for (uint32_t column = begin; column < input_dim; ++column) {
++                sum += static_cast<double>(input[column]) *
++                       static_cast<double>(quant_weights[weight_row + column]) *
++                       scale;
++            }
++        }
++
++        if (!std::isfinite(sum) ||
++            sum > static_cast<double>(std::numeric_limits<float>::max()) ||
++            sum < -static_cast<double>(std::numeric_limits<float>::max())) {
++            return Q8_32_GEMVStatus::NUMERIC_ERROR;
++        }
++        output[row] = static_cast<float>(sum);
++    }
++
++    return Q8_32_GEMVStatus::OK;
++}
++
++template <bool ValidateScales, bool ValidateInput = true,
++          typename ScaleStorage, typename Input>
++Q8_32_GEMVStatus F32WeightPair(
++    const float* quant_weights,
++    const ScaleStorage* scales,
++    const Input* input,
++    float* output,
++    uint32_t input_dim,
++    uint32_t output_dim) noexcept
++{
++    if (!quant_weights || !scales || !input || !output ||
++        input_dim == 0 || output_dim == 0) {
++        return Q8_32_GEMVStatus::INVALID_ARGUMENT;
++    }
++
++    const size_t input_size = static_cast<size_t>(input_dim);
++    const size_t output_size = static_cast<size_t>(output_dim);
++    const uint32_t blocks_per_row =
++        input_dim / 32U + (input_dim % 32U != 0U ? 1U : 0U);
++    const size_t block_count = static_cast<size_t>(blocks_per_row);
++    if (output_size > std::numeric_limits<size_t>::max() / input_size ||
++        output_size > std::numeric_limits<size_t>::max() / block_count) {
++        return Q8_32_GEMVStatus::INVALID_ARGUMENT;
++    }
++
++    if constexpr (ValidateInput) {
++        for (uint32_t column = 0; column < input_dim; ++column) {
++            if (!std::isfinite(input[column])) {
++                return Q8_32_GEMVStatus::NUMERIC_ERROR;
++            }
++        }
++    }
++
++    const uint32_t full_blocks = input_dim / 32U;
++    const uint32_t tail_columns = input_dim % 32U;
++    uint32_t row = 0;
++
++    for (; output_dim - row >= 2U; row += 2U) {
++        const size_t weight_row0 = static_cast<size_t>(row) * input_size;
++        const size_t weight_row1 = weight_row0 + input_size;
++        const size_t scale_row0 = static_cast<size_t>(row) * block_count;
++        const size_t scale_row1 = scale_row0 + block_count;
++
++        __m256d accumulator00 = _mm256_setzero_pd();
++        __m256d accumulator01 = _mm256_setzero_pd();
++        __m256d accumulator02 = _mm256_setzero_pd();
++        __m256d accumulator03 = _mm256_setzero_pd();
++        __m256d accumulator10 = _mm256_setzero_pd();
++        __m256d accumulator11 = _mm256_setzero_pd();
++        __m256d accumulator12 = _mm256_setzero_pd();
++        __m256d accumulator13 = _mm256_setzero_pd();
++
++        for (uint32_t block = 0; block < full_blocks; ++block) {
++            if constexpr (ValidateScales) {
++                const QuantDescriptor& descriptor0 = scales[scale_row0 + block];
++                const QuantDescriptor& descriptor1 = scales[scale_row1 + block];
++                if (descriptor0.zero_point != 0 ||
++                    !std::isfinite(descriptor0.scale) ||
++                    descriptor1.zero_point != 0 ||
++                    !std::isfinite(descriptor1.scale)) {
++                    return Q8_32_GEMVStatus::INVALID_MODEL;
++                }
++            }
++
++            const size_t column = static_cast<size_t>(block) * 32U;
++            const Input* input_block = input + column;
++            const float* weight_block0 = quant_weights + weight_row0 + column;
++            const float* weight_block1 = quant_weights + weight_row1 + column;
++            const __m256d scale0 =
++                _mm256_set1_pd(static_cast<double>(
++                    Q8ScaleValue(scales, scale_row0 + block)));
++            const __m256d scale1 =
++                _mm256_set1_pd(static_cast<double>(
++                    Q8ScaleValue(scales, scale_row1 + block)));
++            AccumulateRowPairF32Weightx4(
++                accumulator00, accumulator10, input_block,
++                weight_block0, weight_block1, scale0, scale1);
++            AccumulateRowPairF32Weightx4(
++                accumulator01, accumulator11, input_block + 4,
++                weight_block0 + 4, weight_block1 + 4, scale0, scale1);
++            AccumulateRowPairF32Weightx4(
++                accumulator02, accumulator12, input_block + 8,
++                weight_block0 + 8, weight_block1 + 8, scale0, scale1);
++            AccumulateRowPairF32Weightx4(
++                accumulator03, accumulator13, input_block + 12,
++                weight_block0 + 12, weight_block1 + 12, scale0, scale1);
++            AccumulateRowPairF32Weightx4(
++                accumulator00, accumulator10, input_block + 16,
++                weight_block0 + 16, weight_block1 + 16, scale0, scale1);
++            AccumulateRowPairF32Weightx4(
++                accumulator01, accumulator11, input_block + 20,
++                weight_block0 + 20, weight_block1 + 20, scale0, scale1);
++            AccumulateRowPairF32Weightx4(
++                accumulator02, accumulator12, input_block + 24,
++                weight_block0 + 24, weight_block1 + 24, scale0, scale1);
++            AccumulateRowPairF32Weightx4(
++                accumulator03, accumulator13, input_block + 28,
++                weight_block0 + 28, weight_block1 + 28, scale0, scale1);
++        }
++
++        const __m256d vector_sum0 = _mm256_add_pd(
++            _mm256_add_pd(accumulator00, accumulator01),
++            _mm256_add_pd(accumulator02, accumulator03));
++        const __m256d vector_sum1 = _mm256_add_pd(
++            _mm256_add_pd(accumulator10, accumulator11),
++            _mm256_add_pd(accumulator12, accumulator13));
++        double sum0 = ReduceAddPD(vector_sum0);
++        double sum1 = ReduceAddPD(vector_sum1);
++
++        if (tail_columns != 0U) {
++            const uint32_t block = full_blocks;
++            if constexpr (ValidateScales) {
++                const QuantDescriptor& descriptor0 = scales[scale_row0 + block];
++                const QuantDescriptor& descriptor1 = scales[scale_row1 + block];
++                if (descriptor0.zero_point != 0 ||
++                    !std::isfinite(descriptor0.scale) ||
++                    descriptor1.zero_point != 0 ||
++                    !std::isfinite(descriptor1.scale)) {
++                    return Q8_32_GEMVStatus::INVALID_MODEL;
++                }
++            }
++
++            const uint32_t begin = block * 32U;
++            const double scale0 = static_cast<double>(
++                Q8ScaleValue(scales, scale_row0 + block));
++            const double scale1 = static_cast<double>(
++                Q8ScaleValue(scales, scale_row1 + block));
++            for (uint32_t column = begin; column < input_dim; ++column) {
++                sum0 += static_cast<double>(input[column]) *
++                        static_cast<double>(quant_weights[weight_row0 + column]) *
++                        scale0;
++            }
++            for (uint32_t column = begin; column < input_dim; ++column) {
++                sum1 += static_cast<double>(input[column]) *
++                        static_cast<double>(quant_weights[weight_row1 + column]) *
++                        scale1;
++            }
++        }
++
++        if (!std::isfinite(sum0) ||
++            sum0 > static_cast<double>(std::numeric_limits<float>::max()) ||
++            sum0 < -static_cast<double>(std::numeric_limits<float>::max())) {
++            return Q8_32_GEMVStatus::NUMERIC_ERROR;
++        }
++        output[row] = static_cast<float>(sum0);
++
++        if (!std::isfinite(sum1) ||
++            sum1 > static_cast<double>(std::numeric_limits<float>::max()) ||
++            sum1 < -static_cast<double>(std::numeric_limits<float>::max())) {
++            return Q8_32_GEMVStatus::NUMERIC_ERROR;
++        }
++        output[row + 1U] = static_cast<float>(sum1);
++    }
++
++    if (row < output_dim) {
++        return F32WeightSingle<ValidateScales, ValidateInput>(
++            quant_weights + static_cast<size_t>(row) * input_size,
++            scales + static_cast<size_t>(row) * block_count,
++            input,
++            output + row,
++            input_dim,
++            1U);
++    }
++
++    return Q8_32_GEMVStatus::OK;
++}
++constexpr uint32_t kFPControlMask = 0xffc0U; // excludes sticky exception flags
++
++struct AddressRange { uintptr_t begin; uintptr_t end; };
++
++bool GetAddressRange(const void* pointer, size_t count, size_t element_size,
++                     AddressRange& range) noexcept
++{
++    if (!pointer || count > std::numeric_limits<size_t>::max() / element_size)
++        return false;
++    const size_t bytes = count * element_size;
++    const uintptr_t begin = reinterpret_cast<uintptr_t>(pointer);
++    if (bytes > std::numeric_limits<uintptr_t>::max() - begin) return false;
++    range = {begin, begin + bytes};
++    return true;
++}
++
++bool Overlaps(AddressRange a, AddressRange b) noexcept
++{
++    return a.begin < b.end && b.begin < a.end;
++}
++
++template <bool ValidateScales, typename ScaleStorage>
++Q8_32_GEMVStatus PreparedRows(
++    const float* weights, const ScaleStorage* scales,
++    const micius::internal::PreparedF64GEMVInput& input, float* output,
++    uint32_t total_rows, uint32_t row_begin, uint32_t row_end) noexcept
++{
++    if (!input.data() || input.size() == 0U || row_begin > row_end ||
++        row_end > total_rows ||
++        input.fp_control() != (_mm_getcsr() & kFPControlMask))
++        return Q8_32_GEMVStatus::INVALID_ARGUMENT;
++    if (row_begin == row_end) return Q8_32_GEMVStatus::OK;
++    if ((row_begin % 2U) != 0U ||
++        ((row_end % 2U) != 0U && row_end != total_rows))
++        return Q8_32_GEMVStatus::INVALID_ARGUMENT;
++
++    const size_t cols = input.size();
++    const size_t blocks = cols / 32U + (cols % 32U != 0U ? 1U : 0U);
++    if (total_rows > std::numeric_limits<size_t>::max() / cols ||
++        total_rows > std::numeric_limits<size_t>::max() / blocks)
++        return Q8_32_GEMVStatus::INVALID_ARGUMENT;
++    AddressRange w{}, s{}, x{}, y{};
++    if (!GetAddressRange(weights, total_rows * cols, sizeof(float), w) ||
++        !GetAddressRange(scales, total_rows * blocks, sizeof(ScaleStorage), s) ||
++        !GetAddressRange(input.data(), cols, sizeof(double), x) ||
++        !GetAddressRange(output, total_rows, sizeof(float), y))
++        return Q8_32_GEMVStatus::INVALID_ARGUMENT;
++    // Check the actual written range against all read-only operands. Adjacent
++    // tasks are allowed to own disjoint slices of the same output allocation.
++    y.begin += static_cast<size_t>(row_begin) * sizeof(float);
++    y.end -= static_cast<size_t>(total_rows - row_end) * sizeof(float);
++    if (Overlaps(y, w) || Overlaps(y, s) || Overlaps(y, x))
++        return Q8_32_GEMVStatus::INVALID_ARGUMENT;
++    return F32WeightPair<ValidateScales, false>(
++        weights + static_cast<size_t>(row_begin) * cols,
++        scales + static_cast<size_t>(row_begin) * blocks,
++        input.data(), output + row_begin, input.size(), row_end - row_begin);
++}
++} // namespace
++namespace micius::internal {
++Q8_32_GEMVStatus GEMV_F32WeightsPreparedRows(
++    const PreparedF32GEMVWeights& weights, const QuantDescriptor* scales,
++    const PreparedF64GEMVInput& input, float* output, uint32_t begin, uint32_t end) noexcept
++{
++    if (!weights.data() || weights.cols() != input.size())
++        return Q8_32_GEMVStatus::INVALID_ARGUMENT;
++    return PreparedRows<true>(weights.data(), scales, input, output, weights.rows(), begin, end);
++}
++Q8_32_GEMVStatus GEMV_F32WeightsPreparedRowsPrevalidatedScales(
++    const PreparedF32GEMVWeights& weights, const QuantDescriptor* scales,
++    const PreparedF64GEMVInput& input, float* output, uint32_t begin, uint32_t end) noexcept
++{
++    if (!weights.data() || weights.cols() != input.size())
++        return Q8_32_GEMVStatus::INVALID_ARGUMENT;
++    return PreparedRows<false>(weights.data(), scales, input, output, weights.rows(), begin, end);
++}
++} // namespace micius::internal
+--- a/src/AI/AICoreEngine.cpp
++++ b/src/AI/AICoreEngine.cpp
+@@ -1,6 +1,17 @@
+ #include "AICoreEngine.h"
+ #include "AIComputKrnlInternal.h"
+ #include "PreparedGEMVInput.h"
++#include "DecodeProfile.h"
++#include <chrono>
++#ifndef MICIUS_PW2_MODE
++#define MICIUS_PW2_MODE 0
++#endif
++#ifndef MICIUS_PW2_BUDGET_MIB
++#define MICIUS_PW2_BUDGET_MIB 512
++#endif
++#if MICIUS_PW2_MODE != 0 && (!defined(MICIUS_REFERENCE_GEMV_PREPARED_F64) || !defined(MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES) || defined(MICIUS_REFERENCE_GEMV_COMPACT_SCALES))
++#error "PW2 requires r1 prepared input and prevalidated descriptor scales"
++#endif
+ 
+ #include "HardwareTopology.h"
+ 
+@@ -88,8 +99,13 @@
+     bool scales_prevalidated,
+     double* prepared_scratch,
+     size_t prepared_capacity,
+-    const micius::internal::PreparedF64GEMVInput* supplied_prepared = nullptr) noexcept
+-{
++    const micius::internal::PreparedF64GEMVInput* supplied_prepared = nullptr,
++    const micius::internal::PreparedF32GEMVWeights* prepared_weights = nullptr) noexcept
++{
++    MICIUS_D1_SCOPE(micius::d1::Current());
++#if MICIUS_PW2_MODE == 0
++    (void)prepared_weights;
++#endif
+ #if !defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
+     (void)prepared_scratch;
+     (void)prepared_capacity;
+@@ -103,6 +119,7 @@
+     PreparedF64GEMVInput local_prepared;
+     const PreparedF64GEMVInput* prepared = supplied_prepared;
+     if (!prepared) {
++        MICIUS_D1_SCOPE(micius::d1::Preparation());
+         if (!prepared_scratch || prepared_capacity < input_dim)
+             return ReferenceMathStatus::INVALID_MODEL;
+         const auto status = PrepareF64GEMVInput(
+@@ -121,7 +138,17 @@
+             weights, scales, *prepared, output, output_dim, 0U, output_dim);
+ #elif defined(MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES)
+     (void)compact_scales;
+-    const auto gemv_status = scales_prevalidated
++    const auto gemv_status =
++#if MICIUS_PW2_MODE != 0
++        prepared_weights
++        ? (scales_prevalidated
++            ? GEMV_F32WeightsPreparedRowsPrevalidatedScales(
++                *prepared_weights, scales, *prepared, output, 0U, output_dim)
++            : GEMV_F32WeightsPreparedRows(
++                *prepared_weights, scales, *prepared, output, 0U, output_dim))
++        :
++#endif
++        scales_prevalidated
+         ? GEMV_Q8_32_PreparedF64RowsPrevalidatedScales(
+             weights, scales, *prepared, output, output_dim, 0U, output_dim)
+         : GEMV_Q8_32_PreparedF64Rows(
+@@ -800,6 +827,40 @@
+         return false;
+     }
+ 
++    std::vector<micius::internal::PreparedF32GEMVWeights> candidate_prepared_weights;
++    micius::internal::PreparedWeightStats candidate_weight_stats;
++    candidate_weight_stats.selection = MICIUS_PW2_MODE;
++    candidate_weight_stats.budget_bytes = uint64_t{MICIUS_PW2_BUDGET_MIB} * 1024U * 1024U;
++#if MICIUS_PW2_MODE != 0
++    const auto weight_prepare_begin = std::chrono::steady_clock::now();
++    try {
++        std::vector<micius::internal::WeightSource> sources;
++        sources.reserve(candidate_layers.size());
++        for (const auto& layer : candidate_layers) {
++#if MICIUS_PW2_MODE == 1
++            sources.push_back({{layer.qkv_packed_weights,
++                static_cast<size_t>(total_qkv_dim) * hidden_dim}, total_qkv_dim, hidden_dim});
++#else
++            sources.push_back({{layer.o_weight,
++                static_cast<size_t>(hidden_dim) * hidden_dim}, hidden_dim, hidden_dim});
++#endif
++        }
++        using Result = micius::internal::WeightPrepareResult;
++        const auto result = micius::internal::PrepareF32WeightGroup(
++            sources, candidate_weight_stats.budget_bytes, candidate_prepared_weights,
++            candidate_weight_stats.extra_bytes);
++        // INVALID is never treated as an optional resource failure.
++        if (result == Result::INVALID) return false;
++        candidate_weight_stats.status = result == Result::READY ? "ready"
++            : result == Result::BUDGET ? "fallback_budget" : "fallback_allocation";
++        candidate_weight_stats.matrices = static_cast<uint32_t>(candidate_prepared_weights.size());
++    } catch (const std::bad_alloc&) {
++        candidate_weight_stats.status = "fallback_allocation";
++    }
++    candidate_weight_stats.preparation_seconds = std::chrono::duration<double>(
++        std::chrono::steady_clock::now() - weight_prepare_begin).count();
++#endif
++
+     const float* old_norm = norm_weight_final;
+     const float* old_embedding = token_embd_weight;
+     const int8_t* old_output_weights = engine_quant_weights;
+@@ -836,6 +897,8 @@
+     // candidate_layers now holds the previous model's owned packed QKV data;
+     // candidate_guard releases it on every exit path.
+     owned_scale_buffers = std::move(scale_buffers);
++    reference_prepared_weights.swap(candidate_prepared_weights);
++    reference_weight_stats = candidate_weight_stats;
+     return true;
+ }
+ 
+@@ -1239,6 +1302,7 @@
+     uint32_t token,
+     uint32_t* out_token) noexcept
+ {
++    MICIUS_D1_SCOPE(micius::d1::Part::Forward);
+     if (speculative_enabled || !model_bound ||
+         model_layers.size() != config.num_layers ||
+         !token_embd_weight || !norm_weight_final ||
+@@ -1273,10 +1337,11 @@
+     const auto gemv = [&](const int8_t* w, const QuantDescriptor* scales,
+                           const float* compact, const float* x, float* y,
+                           uint32_t cols, uint32_t rows, bool validated,
+-                          const micius::internal::PreparedF64GEMVInput* prepared = nullptr) {
++                          const micius::internal::PreparedF64GEMVInput* prepared = nullptr,
++                          const micius::internal::PreparedF32GEMVWeights* prepared_weights = nullptr) {
+         return ReferenceGEMV(w, scales, compact, x, y, cols, rows, validated,
+                              reference_gemv_input.get(),
+-                             std::max(hidden_dim, config.intermediate_dim), prepared);
++                             std::max(hidden_dim, config.intermediate_dim), prepared, prepared_weights);
+     };
+ 
+     const uint32_t position = reference_seq_len;
+@@ -1316,6 +1381,7 @@
+             config.rms_norm_epsilon);
+         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
+ 
++        MICIUS_D1_TAG(QKV);
+         math_status = gemv(
+             layer.qkv_packed_weights,
+             layer.qkv_packed_scales,
+@@ -1324,7 +1390,11 @@
+             reference_qkv.get(),
+             hidden_dim,
+             reference_qkv_dim,
+-            reference_scales_prevalidated);
++            reference_scales_prevalidated
++#if MICIUS_PW2_MODE == 1
++            , nullptr, reference_prepared_weights.empty() ? nullptr : &reference_prepared_weights[layer_index]
++#endif
++            );
+         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
+ 
+         float* query = reference_qkv.get();
+@@ -1503,6 +1573,7 @@
+ #endif
+         }
+ 
++        MICIUS_D1_TAG(O);
+         math_status = gemv(
+             layer.o_weight,
+             layer.o_scales,
+@@ -1511,7 +1582,11 @@
+             reference_projection.get(),
+             hidden_dim,
+             hidden_dim,
+-            reference_scales_prevalidated);
++            reference_scales_prevalidated
++#if MICIUS_PW2_MODE == 2
++            , nullptr, reference_prepared_weights.empty() ? nullptr : &reference_prepared_weights[layer_index]
++#endif
++            );
+         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
+         for (uint32_t i = 0; i < hidden_dim; ++i) {
+             const double value_sum =
+@@ -1534,14 +1609,18 @@
+         {
+ #if defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
+         micius::internal::PreparedF64GEMVInput ffn_prepared;
+-        const auto preparation_status = micius::internal::PrepareF64GEMVInput(
+-            {reference_normed.get(), hidden_dim},
+-            {reference_gemv_input.get(), std::max(hidden_dim, config.intermediate_dim)},
+-            ffn_prepared);
++        const auto preparation_status = [&]() {
++            MICIUS_D1_SCOPE(micius::d1::Part::PrepFFN);
++            return micius::internal::PrepareF64GEMVInput(
++                {reference_normed.get(), hidden_dim},
++                {reference_gemv_input.get(), std::max(hidden_dim, config.intermediate_dim)},
++                ffn_prepared);
++        }();
+         if (preparation_status != Q8_32_GEMVStatus::OK)
+             return preparation_status == Q8_32_GEMVStatus::NUMERIC_ERROR
+                 ? ReferenceStepResult::NUMERIC_ERROR : ReferenceStepResult::INVALID_MODEL_DATA;
+ #endif
++        MICIUS_D1_TAG(Gate);
+         math_status = gemv(
+             layer.gate_weight,
+             layer.gate_scales,
+@@ -1556,6 +1635,7 @@
+ #endif
+             );
+         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
++        MICIUS_D1_TAG(Up);
+         math_status = gemv(
+             layer.up_weight,
+             layer.up_scales,
+@@ -1585,6 +1665,7 @@
+             reference_gate[i] = static_cast<float>(activated);
+         }
+ 
++        MICIUS_D1_TAG(Down);
+         math_status = gemv(
+             layer.down_weight,
+             layer.down_scales,
+@@ -1614,6 +1695,7 @@
+         hidden_dim,
+         config.rms_norm_epsilon);
+     if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
++    MICIUS_D1_TAG(LM);
+     math_status = gemv(
+         engine_quant_weights,
+         engine_scales,
+--- /dev/null
++++ b/include/AI/PreparedGEMVWeights.h
+@@ -0,0 +1,65 @@
++#pragma once
++
++#include "AIComputKrnl.h"
++#include <cstddef>
++#include <cstdint>
++#include <memory>
++#include <span>
++#include <vector>
++
++struct MiciusContext;
++
++namespace micius::internal {
++class PreparedF64GEMVInput;
++
++// PW2 private C++ representation. Exact raw signed integers stored as F32, never scaled.
++// A bound-model snapshot; no activation, scale, pointer-key or token cache.
++class PreparedF32GEMVWeights final {
++public:
++    PreparedF32GEMVWeights() noexcept = default;
++    PreparedF32GEMVWeights(PreparedF32GEMVWeights&&) noexcept = default;
++    PreparedF32GEMVWeights& operator=(PreparedF32GEMVWeights&&) noexcept = default;
++    PreparedF32GEMVWeights(const PreparedF32GEMVWeights&) = delete;
++    PreparedF32GEMVWeights& operator=(const PreparedF32GEMVWeights&) = delete;
++    const float* data() const noexcept { return data_.get(); }
++    uint32_t rows() const noexcept { return rows_; }
++    uint32_t cols() const noexcept { return cols_; }
++private:
++    std::unique_ptr<float[]> data_;
++    uint32_t rows_ = 0, cols_ = 0;
++    friend struct WeightPreparationAccess;
++};
++
++struct WeightSource {
++    std::span<const int8_t> raw;
++    uint32_t rows, cols;
++};
++enum class WeightPrepareResult { READY, BUDGET, ALLOCATION, INVALID };
++
++// All-or-nothing group. Failure clears out; no partially published matrices.
++// Budget counts extra float payload only, not existing Q8, scales or allocator
++// metadata. Preparation includes allocation and touching every expanded byte.
++WeightPrepareResult PrepareF32WeightGroup(
++    std::span<const WeightSource> sources, uint64_t budget_bytes,
++    std::vector<PreparedF32GEMVWeights>& out, uint64_t& bytes) noexcept;
++
++// Same global row-range / output visibility / MXCSR contract as prepared input.
++// The owner and all operands must remain alive and read-only until completion.
++Q8_32_GEMVStatus GEMV_F32WeightsPreparedRows(
++    const PreparedF32GEMVWeights&, const QuantDescriptor*,
++    const PreparedF64GEMVInput&, float*, uint32_t row_begin, uint32_t row_end) noexcept;
++// Only use with model-owned V1 validated scale descriptors.
++Q8_32_GEMVStatus GEMV_F32WeightsPreparedRowsPrevalidatedScales(
++    const PreparedF32GEMVWeights&, const QuantDescriptor*,
++    const PreparedF64GEMVInput&, float*, uint32_t row_begin, uint32_t row_end) noexcept;
++
++struct PreparedWeightStats {
++    uint32_t selection = 0; // 0: NONE, 1: packed QKV, 2: O; PW2 has no combined mode
++    uint32_t matrices = 0;
++    uint64_t budget_bytes = 0, extra_bytes = 0;
++    double preparation_seconds = 0;
++    const char* status = "disabled";
++};
++// Diagnostic observation, not an addition to the public C ABI.
++PreparedWeightStats GetPreparedWeightStats(const MiciusContext*) noexcept;
++} // namespace micius::internal
+--- a/include/AI/AICoreEngine.h
++++ b/include/AI/AICoreEngine.h
+@@ -4,6 +4,7 @@
+ #include "AIHetMemPool.h"
+ #include "AIDataFront.h"
+ #include "AIComputKrnl.h"
++#include "PreparedGEMVWeights.h"
+ 
+ #include "SchedulerCore.h"
+ #include "HardwareTopology.h"
+@@ -362,9 +363,16 @@
+     inline int GetWorkerCoreId(size_t idx) const { return worker_cores[idx]; }
+     inline bool IsModelBound() const { return model_bound; }
+     inline bool IsSpeculativeEnabled() const { return speculative_enabled; }
++    micius::internal::PreparedWeightStats GetPreparedWeightStats() const noexcept
++    { return reference_weight_stats; }
+ 
+ private:
+     // Appended to preserve every existing member offset in option-off builds.
+     AlignedArray<double> reference_query_f64;
+ 
+-};
++    // PW2: one immutable representation per selected matrix in this binding.
++    // Each engine owns its own binding; no claim of cross-Context model sharing.
++    std::vector<micius::internal::PreparedF32GEMVWeights> reference_prepared_weights;
++    micius::internal::PreparedWeightStats reference_weight_stats;
++
++};
+--- /dev/null
++++ b/include/AI/DecodeProfile.h
+@@ -0,0 +1,128 @@
++#pragma once
++// D1 diagnostic only. No public ABI, allocation, atomics, or numerical work.
++#include <cstdint>
++#include <ostream>
++#ifndef MICIUS_DECODE_PROFILE
++#define MICIUS_DECODE_PROFILE 0
++#endif
++#if MICIUS_DECODE_PROFILE
++#include <array>
++#include <chrono>
++#endif
++namespace micius::d1 {
++inline constexpr bool compiled = MICIUS_DECODE_PROFILE != 0;
++enum class Part : unsigned { Forward, QKV, O, Gate, Up, Down, LM,
++    PrepQKV, PrepO, PrepFFN, PrepDown, PrepLM, Count };
++#if MICIUS_DECODE_PROFILE
++class Scope;
++struct Counter { uint64_t calls=0, inclusive_ns=0, exclusive_ns=0; };
++struct State {
++    bool enabled=false;
++    Scope* top=nullptr;
++    Part current=Part::QKV;
++    std::array<Counter,static_cast<unsigned>(Part::Count)> counters{};
++};
++inline thread_local State state;
++#ifdef MICIUS_D1_TEST_CLOCK
++uint64_t TestNow() noexcept;
++inline uint64_t Now() noexcept { return TestNow(); }
++#else
++inline uint64_t Now() noexcept {
++    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count());
++}
++#endif
++inline bool Begin(bool enabled) noexcept {
++    if (state.enabled || state.top) return false;
++    state=State{}; state.enabled=enabled; return true;
++}
++inline bool End() noexcept {
++    if (state.top) return false;
++    state.enabled=false; return true;
++}
++class Scope {
++    bool active_;
++    Part part_;
++    uint64_t start_=0, child_ns_=0;
++    Scope* parent_=nullptr;
++public:
++    explicit Scope(Part part) noexcept : active_(state.enabled), part_(part) {
++        if (active_) { start_=Now(); parent_=state.top; state.top=this; }
++    }
++    ~Scope() {
++        if (!active_) return;
++        const uint64_t elapsed=Now()-start_;
++        state.top=parent_;
++        auto& c=state.counters[static_cast<unsigned>(part_)];
++        ++c.calls; c.inclusive_ns+=elapsed; c.exclusive_ns+=elapsed-child_ns_;
++        if (parent_) parent_->child_ns_+=elapsed;
++    }
++    Scope(const Scope&)=delete;
++    Scope& operator=(const Scope&)=delete;
++};
++inline Part Current() noexcept { return state.current; }
++inline void Tag(Part part) noexcept { if (state.enabled) state.current=part; }
++inline Part Preparation() noexcept {
++    switch (state.current) {
++        case Part::QKV: return Part::PrepQKV;
++        case Part::O: return Part::PrepO;
++        case Part::Down: return Part::PrepDown;
++        case Part::LM: return Part::PrepLM;
++        default: return Part::PrepFFN;
++    }
++}
++#else
++inline bool Begin(bool enabled) noexcept { return !enabled; }
++inline bool End() noexcept { return true; }
++#endif
++class Session {
++    bool valid_, armed_;
++public:
++    explicit Session(bool enabled) noexcept : valid_(Begin(enabled)), armed_(valid_) {}
++    bool valid() const noexcept { return valid_; }
++    bool stop() noexcept {
++        if (!armed_) return valid_;
++        const bool ok=End(); if(ok) armed_=false; return ok;
++    }
++    ~Session() { if(armed_) End(); }
++    Session(const Session&)=delete;
++    Session& operator=(const Session&)=delete;
++};
++inline void Emit(std::ostream& out, const char* phase, uint64_t wall_ns,
++                 uint32_t layers, uint64_t steps) {
++#if MICIUS_DECODE_PROFILE
++    const State saved=state;
++    // Separate diagnostic, outside decode ROI. Never subtract from category times.
++    constexpr uint64_t n=10000;
++    Begin(true);
++    const uint64_t begin=Now();
++    for(uint64_t i=0;i<n;++i) { Scope empty(Part::PrepQKV); }
++    const uint64_t probe=Now()-begin;
++    End(); state=saved;
++    constexpr const char* names[]={"forward","qkv","o","gate","up","down","lm_head",
++        "prepare_qkv","prepare_o","prepare_ffn_shared","prepare_down","prepare_lm_head"};
++    out << std::dec << "d1_profile={\"revision\":\"d1-2026-09-21\",\"phase\":\"" << phase
++        << "\",\"layers\":" << layers << ",\"steps\":" << steps << ",\"wall_ns\":" << wall_ns
++        << ",\"empty_scope_iterations\":" << n << ",\"empty_scope_total_ns\":" << probe
++        << ",\"parts\":{";
++    for(unsigned i=0;i<static_cast<unsigned>(Part::Count);++i) {
++        if(i) out << ',';
++        const auto& c=saved.counters[i];
++        out << '"' << names[i] << "\":{\"calls\":" << c.calls
++            << ",\"inclusive_ns\":" << c.inclusive_ns << ",\"exclusive_ns\":" << c.exclusive_ns << '}';
++    }
++    out << "}}\n";
++#else
++    (void)out; (void)phase; (void)wall_ns; (void)layers; (void)steps;
++#endif
++}
++} // namespace micius::d1
++#define MICIUS_D1_JOIN_(a,b) a##b
++#define MICIUS_D1_JOIN(a,b) MICIUS_D1_JOIN_(a,b)
++#if MICIUS_DECODE_PROFILE
++#define MICIUS_D1_SCOPE(part) ::micius::d1::Scope MICIUS_D1_JOIN(d1_scope_,__LINE__)(part)
++#define MICIUS_D1_TAG(part) ::micius::d1::Tag(::micius::d1::Part::part)
++#else
++#define MICIUS_D1_SCOPE(part) ((void)0)
++#define MICIUS_D1_TAG(part) ((void)0)
++#endif
+--- /dev/null
++++ b/tests/decode_profile_tests.cpp
+@@ -0,0 +1,41 @@
++#define MICIUS_D1_TEST_CLOCK 1
++#include "AI/DecodeProfile.h"
++#include <cassert>
++#include <iostream>
++#include <stdexcept>
++static uint64_t tick=0, reads=0;
++uint64_t micius::d1::TestNow() noexcept { ++reads; return tick; }
++using namespace micius::d1;
++static const Counter& counter(Part p) { return state.counters[static_cast<unsigned>(p)]; }
++int main() {
++    // Disabled instrumentation must not read the clock or count calls.
++    { Session s(false); Scope f(Part::Forward); Scope q(Part::QKV); }
++    assert(reads==0 && counter(Part::Forward).calls==0);
++    {
++        Session s(true); assert(s.valid()); tick=100;
++        { Scope f(Part::Forward); tick=110;
++          { Scope q(Part::QKV); tick=115;
++            { Scope p(Part::PrepQKV); tick=120; }
++            tick=150;
++          }
++          tick=200;
++        }
++        assert(s.stop());
++    }
++    assert(reads==6);
++    assert(counter(Part::Forward).inclusive_ns==100 && counter(Part::Forward).exclusive_ns==60);
++    assert(counter(Part::QKV).inclusive_ns==40 && counter(Part::QKV).exclusive_ns==35);
++    assert(counter(Part::PrepQKV).inclusive_ns==5 && counter(Part::PrepQKV).calls==1);
++    // Unwind a failed consumer, prevent nested reset, then reset cleanly.
++    { Session s(true); tick=300;
++      try { Scope f(Part::Forward); assert(!Begin(true)); tick=310; throw std::runtime_error("test"); }
++      catch(const std::runtime_error&) {}
++      assert(state.top==nullptr && counter(Part::Forward).inclusive_ns==10);
++    }
++    { Session s(true); assert(counter(Part::Forward).calls==0);
++      tick=400; { Scope f(Part::Forward); assert(!End()); tick=410; }
++      assert(s.stop());
++    }
++    assert(!state.enabled && state.top==nullptr);
++    std::cout << "profile_accounting=PASS disabled_clock=PASS failure_unwind=PASS reset=PASS\n";
++}
+--- /dev/null
++++ b/tests/d1_runtime_contract_tests.cpp
+@@ -0,0 +1,12 @@
++// Reuse the unchanged runtime contract suite while D1 collection is active.
++#include "AI/DecodeProfile.h"
++#define main existing_runtime_contract_main
++#include "runtime_contract_tests.cpp"
++#undef main
++int main() {
++    micius::d1::Session session(true);
++    if (!session.valid()) return 2;
++    const int result=existing_runtime_contract_main();
++    if (!session.stop()) return 3;
++    return result;
++}
+--- a/tests/runtime_contract_tests.cpp
++++ b/tests/runtime_contract_tests.cpp
+@@ -1,6 +1,7 @@
+ #include "micius_runtime.h"
+ #include "AICoreEngine.h"
+ #include "AIPrimitives.h"
++#include "AI/PreparedGEMVWeights.h"
+ 
+ #include <algorithm>
+ #include <cassert>
+@@ -31,6 +32,23 @@
+ static_assert(!ExposesRawScaleReplacement<AIEngineFront>);
+ 
+ namespace {
++
++void CheckPreparedWeightBinding(MiciusContext* context, const MiciusConfig& cfg)
++{
++    const auto stats=micius::internal::GetPreparedWeightStats(context);
++    const uint64_t rows=stats.selection==1
++        ? uint64_t{cfg.hidden_dim}+2U*cfg.num_kv_heads*cfg.head_dim : cfg.hidden_dim;
++    const uint64_t expected=uint64_t{cfg.num_layers}*rows*cfg.hidden_dim*sizeof(float);
++    assert(stats.selection<=2 && stats.preparation_seconds>=0);
++    if (!stats.selection) {
++        assert(stats.extra_bytes==0 && stats.matrices==0 && std::strcmp(stats.status,"disabled")==0);
++    } else if (stats.budget_bytes>=expected) {
++        assert(stats.extra_bytes==expected && stats.matrices==cfg.num_layers);
++        assert(std::strcmp(stats.status,"ready")==0);
++    } else {
++        assert(stats.extra_bytes==0 && stats.matrices==0 && std::strcmp(stats.status,"fallback_budget")==0);
++    }
++}
+ 
+ MiciusConfig MakeMinimalConfig()
+ {
+@@ -362,6 +380,8 @@
+         sizeof(ExtendedTensorEntry),
+         MICIUS_ABI_VERSION));
+ 
++    CheckPreparedWeightBinding(context, config);
++    const auto prepared_before_rejection=micius::internal::GetPreparedWeightStats(context);
+     // A rejected replacement is transactional: the last valid model remains
+     // bound and usable.
+     entries[2].byte_size -= 1U;
+@@ -372,6 +392,10 @@
+         sizeof(MiciusTensorEntryV1),
+         MICIUS_ABI_VERSION));
+     entries[2].byte_size += 1U;
++    const auto prepared_after_rejection=micius::internal::GetPreparedWeightStats(context);
++    assert(prepared_before_rejection.extra_bytes==prepared_after_rejection.extra_bytes &&
++        prepared_before_rejection.preparation_seconds==prepared_after_rejection.preparation_seconds);
++    CheckPreparedWeightBinding(context, config);
+ 
+     // Scale descriptors are copied into the engine at the validated boundary.
+     // Invalidating the caller's source after a successful bind must neither
+--- /dev/null
++++ b/tests/prepared_weight_tests.cpp
+@@ -0,0 +1,172 @@
++#include "AI/PreparedGEMVWeights.h"
++#include "AI/PreparedGEMVInput.h"
++#include <immintrin.h>
++#include <algorithm>
++#include <bit>
++#include <cmath>
++#include <cstdlib>
++#include <iostream>
++#include <limits>
++#include <new>
++#include <vector>
++
++// Deterministic optional-allocation failure after the first matrix succeeds.
++// This override belongs only to this single-threaded test executable.
++static int fail_array_after = -1;
++void* operator new[](size_t n) {
++    if (fail_array_after == 0) throw std::bad_alloc();
++    if (fail_array_after > 0) --fail_array_after;
++    if (void* p = std::malloc(n ? n : 1)) return p;
++    throw std::bad_alloc();
++}
++void operator delete[](void* p) noexcept { std::free(p); }
++void operator delete[](void* p, size_t) noexcept { std::free(p); }
++
++namespace r8_frozen {
++Q8_32_GEMVStatus RowPair(const int8_t*, const QuantDescriptor*, const float*,
++                       float*, uint32_t, uint32_t) noexcept;
++}
++using namespace micius::internal;
++using Status = Q8_32_GEMVStatus;
++static void Check(bool ok) { if (!ok) { std::cerr << "PW2 check failed\n"; std::abort(); } }
++static void Equal(const std::vector<float>& a, const std::vector<float>& b) {
++    Check(a.size() == b.size());
++    for (size_t i=0; i<a.size(); ++i)
++        Check(std::bit_cast<uint32_t>(a[i]) == std::bit_cast<uint32_t>(b[i]));
++}
++static uint32_t Next(uint32_t& x) { x=x*1664525U+1013904223U; return x; }
++static void Shape(uint32_t rows, uint32_t cols, uint32_t trial) {
++    uint32_t rng=0x94167acdU+trial;
++    const size_t blocks=(cols+31U)/32U, n=size_t{rows}*cols;
++    std::vector<int8_t> raw(n+1);
++    std::vector<float> x(cols), expected(rows), checked(rows), pre(rows), part(rows);
++    std::vector<double> scratch(cols);
++    std::vector<QuantDescriptor> scales(rows*blocks);
++    for (size_t i=0; i<n; ++i) raw[i+1]=static_cast<int8_t>(int(Next(rng)&255U)-128);
++    for (uint32_t i=0; i<cols; ++i) {
++        x[i]=std::ldexp(static_cast<float>(int(Next(rng)%2001)-1000)/257.0f,
++            trial ? int(i%41)-20 : 0);
++        if (i%19==0) x[i]=-0.0f;
++    }
++    for (size_t i=0; i<scales.size(); ++i)
++        scales[i]=QuantDescriptor(static_cast<float>(int(i%17)-8)/521.0f,0);
++    WeightSource source{{raw.data()+1,n},rows,cols}; uint64_t bytes=0;
++    std::vector<PreparedF32GEMVWeights> w;
++    Check(PrepareF32WeightGroup({&source,1},uint64_t(n)*4,w,bytes)==WeightPrepareResult::READY);
++    Check(bytes==n*4 && w.size()==1);
++    for (size_t i=0; i<n; ++i) Check(w[0].data()[i]==double(raw[i+1]));
++    PreparedF64GEMVInput input;
++    Check(PrepareF64GEMVInput(x,scratch,input)==Status::OK);
++    Check(r8_frozen::RowPair(raw.data()+1,scales.data(),x.data(),expected.data(),cols,rows)==Status::OK);
++    Check(GEMV_F32WeightsPreparedRows(w[0],scales.data(),input,checked.data(),0,rows)==Status::OK);
++    Check(GEMV_F32WeightsPreparedRowsPrevalidatedScales(w[0],scales.data(),input,pre.data(),0,rows)==Status::OK);
++    for (uint32_t end=rows; end;) {
++        const uint32_t begin=(end-1U)&~1U;
++        Check(GEMV_F32WeightsPreparedRows(w[0],scales.data(),input,part.data(),begin,end)==Status::OK);
++        end=begin;
++    }
++    Equal(expected,checked); Equal(expected,pre); Equal(expected,part);
++    // Both operands are snapshots. Moving the owner preserves data; no raw
++    // pointer hit or per-call expansion is used after the sources change.
++    auto moved=std::move(w[0]);
++    std::fill(raw.begin(),raw.end(),127); std::fill(x.begin(),x.end(),99.0f);
++    Check(GEMV_F32WeightsPreparedRows(moved,scales.data(),input,pre.data(),0,rows)==Status::OK);
++    Equal(expected,pre);
++    Check(GEMV_F32WeightsPreparedRows(w[0],scales.data(),input,pre.data(),0,rows)==Status::INVALID_ARGUMENT);
++}
++static void FailureAndTail() {
++    std::vector<int8_t> raw(3*33,0); std::vector<float> x(33,0), y(3,-7);
++    for (size_t r=0; r<3; ++r) { raw[r*33]=127; raw[r*33+32]=-127; }
++    const float value=std::bit_cast<float>(0x3fc00001U);
++    const float scale=std::bit_cast<float>(0x3fc00003U);
++    std::vector<double> scratch(33); std::vector<QuantDescriptor> s(6,QuantDescriptor(scale,0));
++    WeightSource source{raw,3,33}; std::vector<PreparedF32GEMVWeights> w; uint64_t bytes=9;
++    Check(PrepareF32WeightGroup({&source,1},0,w,bytes)==WeightPrepareResult::BUDGET);
++    Check(w.empty() && bytes==0);
++    const WeightSource pair[]={source,source};
++    fail_array_after=1;
++    Check(PrepareF32WeightGroup(pair,792,w,bytes)==WeightPrepareResult::ALLOCATION);
++    fail_array_after=-1;
++    Check(w.empty() && bytes==0);
++    Check(PrepareF32WeightGroup({&source,1},396,w,bytes)==WeightPrepareResult::READY);
++    WeightSource bad{raw,3,32};
++    Check(PrepareF32WeightGroup({&bad,1},396,w,bytes)==WeightPrepareResult::INVALID);
++    Check(w.empty() && bytes==0);
++    Check(PrepareF32WeightGroup({&source,1},396,w,bytes)==WeightPrepareResult::READY);
++    // cols=33 contract fixture: separately rounded cancellation, no FMA.
++    x[0]=value; x[32]=value;
++    PreparedF64GEMVInput in;
++    Check(PrepareF64GEMVInput(x,scratch,in)==Status::OK);
++    std::vector<float> expected(3);
++    Check(r8_frozen::RowPair(raw.data(),s.data(),x.data(),expected.data(),33,3)==Status::OK);
++    Check(GEMV_F32WeightsPreparedRows(w[0],s.data(),in,y.data(),0,3)==Status::OK);
++    Equal(expected,y);
++    for (float v : y) Check(std::bit_cast<uint32_t>(v)==0U);
++    volatile double rounded=(double(value)*127.0)*scale;
++    Check(std::bit_cast<uint32_t>(static_cast<float>(
++        std::fma(-double(value)*127.0,double(scale),rounded)))==0xa8800000U);
++    Check(GEMV_F32WeightsPreparedRows(w[0],s.data(),in,y.data(),1,3)==Status::INVALID_ARGUMENT);
++    Check(GEMV_F32WeightsPreparedRows(w[0],s.data(),in,y.data(),0,1)==Status::INVALID_ARGUMENT);
++    Check(GEMV_F32WeightsPreparedRows(w[0],nullptr,in,nullptr,2,2)==Status::OK);
++    Check(GEMV_F32WeightsPreparedRows(w[0],s.data(),in,
++        const_cast<float*>(w[0].data())+98,0,3)==Status::INVALID_ARGUMENT);
++    Check(GEMV_F32WeightsPreparedRows(w[0],s.data(),in,reinterpret_cast<float*>(scratch.data()),0,3)==Status::INVALID_ARGUMENT);
++    const uint32_t csr=_mm_getcsr(); _mm_setcsr(csr^0x2000U);
++    Check(GEMV_F32WeightsPreparedRows(w[0],s.data(),in,y.data(),0,3)==Status::INVALID_ARGUMENT);
++    _mm_setcsr(csr);
++    s[0].zero_point=1;
++    Check(GEMV_F32WeightsPreparedRows(w[0],s.data(),in,y.data(),0,3)==Status::INVALID_MODEL);
++    s[0]=QuantDescriptor(std::numeric_limits<float>::infinity(),0);
++    Check(GEMV_F32WeightsPreparedRows(w[0],s.data(),in,y.data(),0,3)==Status::INVALID_MODEL);
++    s[0]=QuantDescriptor(std::numeric_limits<float>::max(),0);
++    x[0]=std::numeric_limits<float>::max();
++    Check(PrepareF64GEMVInput(x,scratch,in)==Status::OK);
++    Check(GEMV_F32WeightsPreparedRowsPrevalidatedScales(w[0],s.data(),in,y.data(),0,3)==Status::NUMERIC_ERROR);
++    x[0]=std::numeric_limits<float>::quiet_NaN();
++    Check(PrepareF64GEMVInput(x,scratch,in)==Status::NUMERIC_ERROR);
++    Check(GEMV_F32WeightsPreparedRows(w[0],s.data(),in,y.data(),0,3)==Status::INVALID_ARGUMENT);
++}
++static void ExactRawDomainAndFPControls() {
++    const uint32_t saved=_mm_getcsr();
++    std::vector<int8_t> raw(256);
++    for (int i=0;i<256;++i) raw[size_t(i)]=static_cast<int8_t>(i-128);
++    WeightSource source{raw,2,128};
++    std::vector<PreparedF32GEMVWeights> weights; uint64_t bytes=0;
++    _mm_setcsr(0x9fc0U); // Preparation can use a different FP control state.
++    Check(PrepareF32WeightGroup({&source,1},1023,weights,bytes)==WeightPrepareResult::BUDGET);
++    Check(weights.empty() && bytes==0);
++    Check(PrepareF32WeightGroup({&source,1},1024,weights,bytes)==WeightPrepareResult::READY);
++    Check(bytes==1024);
++    for (int i=0;i<256;++i) Check(double(weights[0].data()[i])==double(i-128));
++    std::vector<float> x(128), expected(2), checked(2), pre(2);
++    std::vector<double> scratch(128);
++    std::vector<QuantDescriptor> scales(8);
++    _mm_setcsr(0x1f80U);
++    for (size_t i=0;i<x.size();++i)
++        x[i]=std::ldexp(float(int(i%17)-8)/19.0f,int(i%61)-30);
++    x[0]=std::bit_cast<float>(uint32_t{1}); x[1]=-0.0f;
++    for (size_t i=0;i<scales.size();++i) scales[i]=QuantDescriptor(float(int(i)-4)/521.0f,0);
++    scales[0]=QuantDescriptor(std::bit_cast<float>(uint32_t{0x00800001}),0);
++    for (uint32_t rounding : {0U,0x2000U,0x4000U,0x6000U})
++        for (uint32_t denormals : {0U,0x40U,0x8000U,0x8040U}) {
++            _mm_setcsr(0x1f80U|rounding|denormals);
++            PreparedF64GEMVInput input;
++            Check(PrepareF64GEMVInput(x,scratch,input)==Status::OK);
++            Check(r8_frozen::RowPair(raw.data(),scales.data(),x.data(),expected.data(),128,2)==Status::OK);
++            Check(GEMV_F32WeightsPreparedRows(weights[0],scales.data(),input,checked.data(),0,2)==Status::OK);
++            Check(GEMV_F32WeightsPreparedRowsPrevalidatedScales(weights[0],scales.data(),input,pre.data(),0,2)==Status::OK);
++            Equal(expected,checked); Equal(expected,pre);
++        }
++    _mm_setcsr(saved);
++}
++int main() {
++    unsigned cases=0;
++    for (uint32_t cols : {1U,7U,31U,32U,33U,63U,64U,65U,129U,256U,960U,2560U})
++        for (uint32_t rows : {1U,2U,3U,4U,5U,7U,16U})
++            for (uint32_t trial=0; trial<2; ++trial) { Shape(rows,cols,trial); ++cases; }
++    Shape(1600,960,1); Shape(960,960,1); cases+=2;
++    FailureAndTail();
++    ExactRawDomainAndFPControls();
++    std::cout << "pw2_shape_bitwise_cases=" << cases
++              << "\npw2_raw_values=256\npw2_fp_control_cases=16\nstatus=PASS\n";
++}

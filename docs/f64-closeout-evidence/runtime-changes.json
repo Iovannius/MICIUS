@@ -1,0 +1,78 @@
+{
+  "original_archive": "04-MICIUS.zip",
+  "original_archive_sha256": "80c17e5b65228182014ade3487ce7210c7cbc23cf6836581f8da227fc9f0ee91",
+  "changes": [
+    {
+      "path": "CMakeLists.txt",
+      "status": "modified",
+      "before_sha256": "80d1743b3082a44093b8a4c8547496ad08cdc5ff4a004ac083dd347ba2c5ac8a",
+      "after_sha256": "7b2d850f9a92df92ea5fe49f4da14dd3356d667f555ef72a97990829945d3721"
+    },
+    {
+      "path": "src/micius_runtime.cpp",
+      "status": "modified",
+      "before_sha256": "fe5cb0a66cda81c86d80fc694de9de7239d7d99b4b4eaca3fbecc60a50cb567b",
+      "after_sha256": "44b87f5166e335606f15a7bbfcb3e578c0030a75af76a5c90f0d3e4747d9b78a"
+    },
+    {
+      "path": "src/app/MiciusShell.cpp",
+      "status": "modified",
+      "before_sha256": "419f1fb9d2296e57bdd51af1e1dc62a4208ef9aa4feec7de0ac7c6009f289fe5",
+      "after_sha256": "b313eac610db0949649a5859550acbbfc17cc8434dd46181e81ec2577be2bd67"
+    },
+    {
+      "path": "src/AI/PreparedGEMVWeights.cpp",
+      "status": "added",
+      "after_sha256": "e276f697b24ebd26f898f4e62e14894bdce9154c986fda82f4c63e19cb01f44c"
+    },
+    {
+      "path": "src/AI/ReferenceF32WeightGEMVAVX2.cpp",
+      "status": "added",
+      "after_sha256": "ab7eab4ca5413a07b365cb625e29da6eb43a934c34dffce9f6da197d9c97d378"
+    },
+    {
+      "path": "src/AI/AICoreEngine.cpp",
+      "status": "modified",
+      "before_sha256": "9340736d24de7f943e9f18d88c1dc38f02f124f61b4456f1cc503d5a70d8b665",
+      "after_sha256": "c939ec565b7b38702960da8bc9a751279ba2a59b5809404a9b87e69d2618bae1"
+    },
+    {
+      "path": "include/AI/PreparedGEMVWeights.h",
+      "status": "added",
+      "after_sha256": "436be503b45abc09a9aa8408ec7f8cbf4828d384c9cddf970d91ffb298324f87"
+    },
+    {
+      "path": "include/AI/AICoreEngine.h",
+      "status": "modified",
+      "before_sha256": "8efdb986f6591b06dae3d5559759c01f49a15a0d4f992c7a2910663646194e93",
+      "after_sha256": "129e80bf94e3644f7bc07b12368ea74e99b02871b7998c1ddac5a52f70f49142"
+    },
+    {
+      "path": "include/AI/DecodeProfile.h",
+      "status": "added",
+      "after_sha256": "dd7ef5d1162b52afefa3198e7a36a8e8e18b2053c7e5e7e447e32275f365a547"
+    },
+    {
+      "path": "tests/decode_profile_tests.cpp",
+      "status": "added",
+      "after_sha256": "1882375b0ea7dd2e983e115713cd16ce6de64fd3836f48404de799992632d70a"
+    },
+    {
+      "path": "tests/d1_runtime_contract_tests.cpp",
+      "status": "added",
+      "after_sha256": "3578c6f07b2b01d8cb0a9300b7fc9d10c33f1aaa7671242f22746f37e3dca55e"
+    },
+    {
+      "path": "tests/runtime_contract_tests.cpp",
+      "status": "modified",
+      "before_sha256": "178abcefe639c1990a0a4c14a7843abfd0ff887afc48ad33ad2aaa235e1e71be",
+      "after_sha256": "f8f6bf894de7c5e28e1c0a8f44ec5e1041efbf3a6b562276a2841403d72f3c3e"
+    },
+    {
+      "path": "tests/prepared_weight_tests.cpp",
+      "status": "added",
+      "after_sha256": "d20aec54cbe4b554fa3c89399a4d31a1d69a56d66b747d761bbb53c8a0b562fd"
+    }
+  ],
+  "unchanged_files": 35
+}

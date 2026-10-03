@@ -1,0 +1,128 @@
+{
+  "main_loops": [
+    {
+      "side": "BASE",
+      "kind": "q8",
+      "checked": true,
+      "start": "0x1400d10c0",
+      "end_exclusive": "0x1400d1305",
+      "instructions": 111,
+      "bytes": 581,
+      "mnemonics": {
+        "mov": 1,
+        "cmp": 5,
+        "jne": 3,
+        "vmovd": 4,
+        "and": 2,
+        "jg": 2,
+        "vcvtss2sd": 2,
+        "vbroadcastsd": 2,
+        "vpmovsxbd": 16,
+        "vcvtdq2pd": 16,
+        "vmovupd": 8,
+        "vmulpd": 32,
+        "vaddpd": 16,
+        "add": 2
+      },
+      "stack": [
+        "cmp\tqword ptr [rbp - 0x78], rdx"
+      ],
+      "calls": [],
+      "fma": [],
+      "EVEX": 0,
+      "file": "BASE-q8-checked-loop.asm",
+      "code_sha256": "d0b034268508f336fc640e53e664cc05f9dc4a2345d1f379f6dc0433c82388d5"
+    },
+    {
+      "side": "BASE",
+      "kind": "q8",
+      "checked": false,
+      "start": "0x1400d1af0",
+      "end_exclusive": "0x1400d1cd6",
+      "instructions": 98,
+      "bytes": 486,
+      "mnemonics": {
+        "vmovss": 2,
+        "vcvtss2sd": 2,
+        "vbroadcastsd": 2,
+        "vpmovsxbd": 16,
+        "vcvtdq2pd": 16,
+        "vmovupd": 8,
+        "vmulpd": 32,
+        "vaddpd": 16,
+        "add": 2,
+        "cmp": 1,
+        "jne": 1
+      },
+      "stack": [],
+      "calls": [],
+      "fma": [],
+      "EVEX": 0,
+      "file": "BASE-q8-prevalidated-loop.asm",
+      "code_sha256": "11a01ac101cf528cc5d5edec3080c4c35ed4a43baf0a1349b24516d44cf43e3a"
+    },
+    {
+      "side": "PROFILE",
+      "kind": "q8",
+      "checked": true,
+      "start": "0x1400d1dc0",
+      "end_exclusive": "0x1400d2005",
+      "instructions": 111,
+      "bytes": 581,
+      "mnemonics": {
+        "mov": 1,
+        "cmp": 5,
+        "jne": 3,
+        "vmovd": 4,
+        "and": 2,
+        "jg": 2,
+        "vcvtss2sd": 2,
+        "vbroadcastsd": 2,
+        "vpmovsxbd": 16,
+        "vcvtdq2pd": 16,
+        "vmovupd": 8,
+        "vmulpd": 32,
+        "vaddpd": 16,
+        "add": 2
+      },
+      "stack": [
+        "cmp\tqword ptr [rbp - 0x78], rdx"
+      ],
+      "calls": [],
+      "fma": [],
+      "EVEX": 0,
+      "file": "PROFILE-q8-checked-loop.asm",
+      "code_sha256": "d0b034268508f336fc640e53e664cc05f9dc4a2345d1f379f6dc0433c82388d5"
+    },
+    {
+      "side": "PROFILE",
+      "kind": "q8",
+      "checked": false,
+      "start": "0x1400d27f0",
+      "end_exclusive": "0x1400d29d6",
+      "instructions": 98,
+      "bytes": 486,
+      "mnemonics": {
+        "vmovss": 2,
+        "vcvtss2sd": 2,
+        "vbroadcastsd": 2,
+        "vpmovsxbd": 16,
+        "vcvtdq2pd": 16,
+        "vmovupd": 8,
+        "vmulpd": 32,
+        "vaddpd": 16,
+        "add": 2,
+        "cmp": 1,
+        "jne": 1
+      },
+      "stack": [],
+      "calls": [],
+      "fma": [],
+      "EVEX": 0,
+      "file": "PROFILE-q8-prevalidated-loop.asm",
+      "code_sha256": "11a01ac101cf528cc5d5edec3080c4c35ed4a43baf0a1349b24516d44cf43e3a"
+    }
+  ],
+  "q8_checked_and_prevalidated_identical_BASE_PROFILE_PW2_NONE": true,
+  "prevalidated_loops_no_stack_CALL_FMA_EVEX": true
+}

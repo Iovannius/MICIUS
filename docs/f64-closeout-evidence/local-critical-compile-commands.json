@@ -1,0 +1,32 @@
+[
+  {
+    "directory": "<LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local",
+    "command": "/usr/bin/g++ -DMICIUS_PW2_BUDGET_MIB=512 -DMICIUS_PW2_MODE=0 -DMICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD=1 -DMICIUS_REFERENCE_ATTENTION_VALUE_AVX2=1 -DMICIUS_REFERENCE_GEMV_AVX2=1 -DMICIUS_REFERENCE_GEMV_PREPARED_F64=1 -DMICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES=1 -DMICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2=1 -I. -I./src -I./include -I./include/AI -I./include/app -O3 -DNDEBUG -std=c++20 -mavx2 -mfma -Wall -Wextra -Wpedantic -Wconversion -Wshadow -O3 -g -fno-omit-frame-pointer -march=native -funroll-loops -falign-functions=32 -falign-loops=32 -mprefer-vector-width=256 -fno-stack-protector -o CMakeFiles/micius_core.dir/src/AI/AICoreEngine.cpp.o -c ./src/AI/AICoreEngine.cpp",
+    "file": "./src/AI/AICoreEngine.cpp",
+    "output": "CMakeFiles/micius_core.dir/src/AI/AICoreEngine.cpp.o"
+  },
+  {
+    "directory": "<LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local",
+    "command": "/usr/bin/g++ -DMICIUS_PW2_BUDGET_MIB=512 -DMICIUS_PW2_MODE=0 -DMICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD=1 -DMICIUS_REFERENCE_ATTENTION_VALUE_AVX2=1 -DMICIUS_REFERENCE_GEMV_AVX2=1 -DMICIUS_REFERENCE_GEMV_PREPARED_F64=1 -DMICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES=1 -DMICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2=1 -I. -I./src -I./include -I./include/AI -I./include/app -O3 -DNDEBUG -std=c++20 -mavx2 -mfma -Wall -Wextra -Wpedantic -Wconversion -Wshadow -O3 -g -fno-omit-frame-pointer -march=native -funroll-loops -falign-functions=32 -falign-loops=32 -mprefer-vector-width=256 -fno-stack-protector -fno-fast-math -ffp-contract=off -o CMakeFiles/micius_core.dir/src/AI/ReferenceGEMVAVX2.cpp.o -c ./src/AI/ReferenceGEMVAVX2.cpp",
+    "file": "./src/AI/ReferenceGEMVAVX2.cpp",
+    "output": "CMakeFiles/micius_core.dir/src/AI/ReferenceGEMVAVX2.cpp.o"
+  },
+  {
+    "directory": "<LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local",
+    "command": "/usr/bin/g++ -DMICIUS_PW2_BUDGET_MIB=512 -DMICIUS_PW2_MODE=0 -DMICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD=1 -DMICIUS_REFERENCE_ATTENTION_VALUE_AVX2=1 -DMICIUS_REFERENCE_GEMV_AVX2=1 -DMICIUS_REFERENCE_GEMV_PREPARED_F64=1 -DMICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES=1 -DMICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2=1 -I. -I./src -I./include -I./include/AI -I./include/app -O3 -DNDEBUG -std=c++20 -mavx2 -mfma -Wall -Wextra -Wpedantic -Wconversion -Wshadow -O3 -g -fno-omit-frame-pointer -march=native -funroll-loops -falign-functions=32 -falign-loops=32 -mprefer-vector-width=256 -fno-stack-protector -o CMakeFiles/micius_core.dir/src/app/MiciusShell.cpp.o -c ./src/app/MiciusShell.cpp",
+    "file": "./src/app/MiciusShell.cpp",
+    "output": "CMakeFiles/micius_core.dir/src/app/MiciusShell.cpp.o"
+  },
+  {
+    "directory": "<LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local",
+    "command": "/usr/bin/g++ -I. -I./src -I./include -I./include/AI -I./include/app -O3 -DNDEBUG -std=c++20 -UNDEBUG -mavx2 -mfma -Wall -Wextra -Wpedantic -Wconversion -Wshadow -O3 -g -fno-omit-frame-pointer -march=native -funroll-loops -falign-functions=32 -falign-loops=32 -mprefer-vector-width=256 -fno-stack-protector -fno-fast-math -ffp-contract=off -o CMakeFiles/prepared_gemv_tests.dir/tests/reference/r8_q8_frozen.cpp.o -c ./tests/reference/r8_q8_frozen.cpp",
+    "file": "./tests/reference/r8_q8_frozen.cpp",
+    "output": "CMakeFiles/prepared_gemv_tests.dir/tests/reference/r8_q8_frozen.cpp.o"
+  },
+  {
+    "directory": "<LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local",
+    "command": "/usr/bin/g++ -I. -I./src -I./include -I./include/AI -I./include/app -O3 -DNDEBUG -std=c++20 -UNDEBUG -mavx2 -mfma -Wall -Wextra -Wpedantic -Wconversion -Wshadow -O3 -g -fno-omit-frame-pointer -march=native -funroll-loops -falign-functions=32 -falign-loops=32 -mprefer-vector-width=256 -fno-stack-protector -fno-fast-math -ffp-contract=off -o CMakeFiles/prepared_weight_tests.dir/tests/reference/r8_q8_frozen.cpp.o -c ./tests/reference/r8_q8_frozen.cpp",
+    "file": "./tests/reference/r8_q8_frozen.cpp",
+    "output": "CMakeFiles/prepared_weight_tests.dir/tests/reference/r8_q8_frozen.cpp.o"
+  }
+]

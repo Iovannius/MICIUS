@@ -1,0 +1,49 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "f64-reference-windows",
+      "displayName": "Accepted F64 reference (Windows Clang64)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-f64-reference",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_BUILD_TYPE": "Release",
+        "ARCH": "native",
+        "ALIGN": "32",
+        "BUILD_TESTING": "ON",
+        "MICIUS_ENABLE_LEGACY_TUNING": "ON",
+        "MICIUS_ENABLE_FAST_MATH": "OFF",
+        "MICIUS_ENABLE_LTO": "ON",
+        "MICIUS_USE_LLD": "ON",
+        "MICIUS_STATIC_RUNTIME": "ON",
+        "MICIUS_BUILD_CLI": "ON",
+        "MICIUS_BUILD_SANDBOX": "ON",
+        "MICIUS_REFERENCE_GEMV_AVX2": "ON",
+        "MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2": "ON",
+        "MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES": "ON",
+        "MICIUS_REFERENCE_GEMV_PREPARED_F64": "ON",
+        "MICIUS_REFERENCE_GEMV_COMPACT_SCALES": "OFF",
+        "MICIUS_REFERENCE_ATTENTION_VALUE_AVX2": "ON",
+        "MICIUS_REFERENCE_ATTENTION_QUERY_F64_CACHE": "OFF",
+        "MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD": "ON",
+        "MICIUS_PW2_SELECTION": "NONE",
+        "MICIUS_PW2_BUDGET_MIB": "512",
+        "MICIUS_DECODE_PROFILE": "OFF",
+        "MICIUS_BENCHMARK_ITT": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "f64-reference-windows", "configurePreset": "f64-reference-windows", "jobs": 8 }
+  ],
+  "testPresets": [
+    {
+      "name": "f64-reference-windows",
+      "configurePreset": "f64-reference-windows",
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    }
+  ]
+}

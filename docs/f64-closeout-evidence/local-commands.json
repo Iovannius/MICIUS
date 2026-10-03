@@ -1,0 +1,111 @@
+[
+  {
+    "label": "verify-source",
+    "argv": [
+      "python3",
+      "./scripts/verify-f64-reference.py"
+    ],
+    "exit": 0,
+    "wall_seconds": 0.022429924999983086
+  },
+  {
+    "label": "bash-syntax",
+    "argv": [
+      "bash",
+      "-n",
+      "./scripts/build-f64-reference-windows.sh"
+    ],
+    "exit": 0,
+    "wall_seconds": 0.0016258340000376847
+  },
+  {
+    "label": "configure",
+    "argv": [
+      "<LOCAL_WORKSPACE>/cf7-tools/cmake/data/bin/cmake",
+      "--preset",
+      "f64-reference-windows",
+      "-B",
+      "<LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local",
+      "-DCMAKE_CXX_COMPILER=g++",
+      "-DCMAKE_MAKE_PROGRAM=<LOCAL_WORKSPACE>/cf7-tools/ninja/data/bin/ninja",
+      "-DMICIUS_ENABLE_LTO=OFF",
+      "-DMICIUS_USE_LLD=OFF",
+      "-DMICIUS_STATIC_RUNTIME=OFF"
+    ],
+    "exit": 0,
+    "wall_seconds": 0.3073208519999753
+  },
+  {
+    "label": "build",
+    "argv": [
+      "<LOCAL_WORKSPACE>/cf7-tools/cmake/data/bin/cmake",
+      "--build",
+      "<LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local",
+      "--parallel",
+      "8"
+    ],
+    "exit": 0,
+    "wall_seconds": 5.230923092000012
+  },
+  {
+    "label": "ctest",
+    "argv": [
+      "<LOCAL_WORKSPACE>/cf7-tools/cmake/data/bin/ctest",
+      "--test-dir",
+      "<LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local",
+      "--output-on-failure",
+      "--no-tests=error"
+    ],
+    "exit": 0,
+    "wall_seconds": 0.03803525500006799
+  },
+  {
+    "label": "parity",
+    "argv": [
+      "<LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local/bin/micius_cli",
+      "--model-benchmark",
+      "--model",
+      "./tests/fixtures/f64-smoke.gguf",
+      "--cpu",
+      "0",
+      "--token",
+      "1",
+      "--warmup",
+      "0",
+      "--steps",
+      "32",
+      "--pw2-parity",
+      "<LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/local-validation/trace.bin"
+    ],
+    "exit": 0,
+    "wall_seconds": 0.002500814999962131
+  },
+  {
+    "label": "smoke",
+    "argv": [
+      "<LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local/bin/micius_cli",
+      "--model-benchmark",
+      "--model",
+      "./tests/fixtures/f64-smoke.gguf",
+      "--cpu",
+      "0",
+      "--token",
+      "1",
+      "--warmup",
+      "8",
+      "--steps",
+      "128"
+    ],
+    "exit": 0,
+    "wall_seconds": 0.004402985999945486
+  },
+  {
+    "label": "verify-source-after",
+    "argv": [
+      "python3",
+      "./scripts/verify-f64-reference.py"
+    ],
+    "exit": 0,
+    "wall_seconds": 0.022869571999990512
+  }
+]

@@ -1,0 +1,31 @@
+{
+  "status": "PASS",
+  "scope": "Single GCC/Linux integration build; not Windows performance evidence",
+  "ctest_count": 11,
+  "ctest_all_passed": true,
+  "runtime_inputs_unchanged": 48,
+  "parity_steps": 32,
+  "trace_sha256": "f4fff2af22be863fa51c188903c6c088c8bfacd1eab7a587b0ff480235e22117",
+  "smoke": {
+    "status": "PASS",
+    "pw2_selection": "0",
+    "pw2_status": "disabled",
+    "pw2_extra_bytes": "0",
+    "d1_profile_compiled": "0",
+    "completed_steps": "128",
+    "final_token": "19",
+    "token_checksum": "0x62d86fd7029a86bc",
+    "last_logits_checksum": "0xf64f1f011b0cad87",
+    "gemv_input_preparation": "f64_snapshot_per_input",
+    "gemv_fp_contract": "off"
+  },
+  "cli_sha256": "a5737ee76b8f67b722e1c3205d6f5b04d98f0b6e89c53a0e41bfb579188a1450",
+  "fixture_sha256": "0f5911ef763a4d4ece3992f26043e2384d22372bd4b8954fa731cda786b7bccd",
+  "cpu": 0,
+  "overrides": [
+    "GNU 13.3",
+    "LTO OFF",
+    "LLD OFF",
+    "static runtime OFF"
+  ]
+}

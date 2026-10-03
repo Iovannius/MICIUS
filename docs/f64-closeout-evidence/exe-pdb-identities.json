@@ -1,0 +1,22 @@
+[
+  {
+    "side": "BASE",
+    "exe_sha256": "404035f254f2023d1aed8906fc5f7b737c998b74814510fbc5ef59784dc5ac70",
+    "pdb_sha256": "2bd6eea2da74e5be8e9249f6004ec46291aa51131fe278b12252c359933736e1",
+    "guid_bytes": "80eca0f1ba0167a74c4c44205044422e",
+    "age": 1,
+    "guid_age_match": true,
+    "selected_functions": 5,
+    "selected_bytes_verified": 9653
+  },
+  {
+    "side": "CF5",
+    "exe_sha256": "afce9ba65abcc75255072f094ac5f7e5c2e2b37007ff2c2928289f79f146813d",
+    "pdb_sha256": "643b328236d3297bd7f1548f8302e47cfdc3f77dd36571a73f015e344be55d44",
+    "guid_bytes": "55db0a43a5436f264c4c44205044422e",
+    "age": 1,
+    "guid_age_match": true,
+    "selected_functions": 7,
+    "selected_bytes_verified": 12399
+  }
+]

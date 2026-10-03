@@ -1,0 +1,28 @@
+========================================================
+ MICIUS Shell v0.6-rebuild
+========================================================
+
+d1_profile_compiled=0
+d1_profile_requested=0
+[Loader] Searching for ./tests/fixtures/f64-smoke.gguf...
+
+[Model Topology Discovered]
+  * general.architecture : llama
+  * Tensors Mapped   : 20
+  * Memory Locked    : 0 MB (Zero-Copy)
+
+[Loader] [1;32m./tests/fixtures/f64-smoke[0m securely bound to Engine.
+pw2_revision=pw2-2026-09-20
+pw2_selection=0
+pw2_status=disabled
+pw2_matrices=0
+pw2_budget_bytes=536870912
+pw2_extra_bytes=0
+pw2_preparation_seconds=0
+model_load_and_bind_seconds=0.000327034
+mode=pw2_fixed_token_full_logits
+pw2_trace_steps=32
+pw2_trace_token=1
+worker_start_cpu_0=0
+worker_end_cpu_0=0
+status=PASS

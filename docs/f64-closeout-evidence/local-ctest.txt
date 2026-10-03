@@ -1,0 +1,28 @@
+Internal ctest changing into directory: <LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local
+Test project <LOCAL_WORKSPACE>/f64-integration-closeout-2026-10-02/build-local
+      Start  1: runtime_contract_tests
+ 1/11 Test  #1: runtime_contract_tests ............   Passed    0.00 sec
+      Start  2: gguf_parser_tests
+ 2/11 Test  #2: gguf_parser_tests .................   Passed    0.00 sec
+      Start  3: tensor_codec_tests
+ 3/11 Test  #3: tensor_codec_tests ................   Passed    0.00 sec
+      Start  4: prepared_gemv_tests
+ 4/11 Test  #4: prepared_gemv_tests ...............   Passed    0.00 sec
+      Start  5: prepared_weight_tests
+ 5/11 Test  #5: prepared_weight_tests .............   Passed    0.01 sec
+      Start  6: q8_32_gemv_tests
+ 6/11 Test  #6: q8_32_gemv_tests ..................   Passed    0.00 sec
+      Start  7: attention_value_avx2_tests
+ 7/11 Test  #7: attention_value_avx2_tests ........   Passed    0.00 sec
+      Start  8: attention_query_f64_cache_tests
+ 8/11 Test  #8: attention_query_f64_cache_tests ...   Passed    0.00 sec
+      Start  9: attention_score_time_quad_tests
+ 9/11 Test  #9: attention_score_time_quad_tests ...   Passed    0.00 sec
+      Start 10: benchmark_itt_roi_tests
+10/11 Test #10: benchmark_itt_roi_tests ...........   Passed    0.00 sec
+      Start 11: decode_profile_tests
+11/11 Test #11: decode_profile_tests ..............   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 11
+
+Total Test time (real) =   0.03 sec

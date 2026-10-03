@@ -1,0 +1,39 @@
+{
+  "status": "VERIFIED_NO_END_TO_END_GAIN",
+  "archive_sha256": "b68d1748514e87fa4fa13b7ab792b5f447246ad221ee9908998d13e7453a2111",
+  "files_verified": 97,
+  "sources_verified": 55,
+  "compiled_files_verified": 6,
+  "commands": 34,
+  "ctest": "3 x 12 PASS",
+  "trace": "3 x 32 steps bitwise equal to accepted baseline",
+  "independent_time_based_gain_pct": [
+    -0.18000540591314174,
+    0.09608164374790285,
+    -0.38076906737524174,
+    -0.7121691612597569,
+    -3.7039487705875285,
+    -3.1497467547024094
+  ],
+  "paired_throughput_gain_pct": [
+    -0.1799934729559416,
+    0.09607258355304182,
+    -0.380766923606779,
+    -0.7121687848549496,
+    -3.7039574330870573,
+    -3.1497546322582393
+  ],
+  "paired_median_gain_pct": -0.5464678542308643,
+  "wins": 1,
+  "extra_payload_bytes": 1096581764,
+  "median_tok_s": {
+    "BASE": 18.874862,
+    "CF5": 18.7785235
+  },
+  "median_prepare_seconds": 0.717743,
+  "median_load_bind_seconds": {
+    "BASE": 0.766081,
+    "CF5": 1.4857698
+  },
+  "median_decode_seconds_saved_per_128": -0.037271500000000124
+}

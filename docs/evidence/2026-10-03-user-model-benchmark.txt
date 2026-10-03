@@ -1,0 +1,56 @@
+$ /c/Projects/MICIUS/build-f64-reference/bin/micius_cli.exe \
+  --model-benchmark \
+  --model C:/Projects/MICIUS/models/smollm2-360m-instruct-q8_0.gguf \
+  --warmup 8 --steps 128 --cpu 4 --token 1
+========================================================
+ MICIUS Shell v0.6-rebuild
+========================================================
+
+d1_profile_compiled=0
+d1_profile_requested=0
+[Loader] Searching for C:/Projects/MICIUS/models/smollm2-360m-instruct-q8_0.gguf...
+
+[Model Topology Discovered]
+  * general.basename : smollm2
+  * general.name : Smollm2 360M 8k Lc100K Mix1 Ep2
+  * general.architecture : llama
+  * Tensors Mapped   : 290
+  * Memory Locked    : 368 MB (Zero-Copy)
+
+[Loader] C:/Projects/MICIUS/models/smollm2-360m-instruct-q8_0 securely bound to Engine.
+pw2_revision=pw2-2026-09-20
+pw2_selection=0
+pw2_status=disabled
+pw2_matrices=0
+pw2_budget_bytes=536870912
+pw2_extra_bytes=0
+pw2_preparation_seconds=0
+model_load_and_bind_seconds=0.8336093
+MICIUS real-model reference benchmark
+abi=0x60003
+gemv_backend=q8_32_prepared_f64_avx2_row_pair_experimental
+gemv_fp_contract=off
+gemv_input_preparation=f64_snapshot_per_input
+gemv_scale_validation=private_v1_prevalidated_checked_fallback
+gemv_scale_storage=private_q8_32_descriptor_per_block
+attention_value_backend=f32_f64_avx2_order_preserving_experimental
+attention_score_query_cache=none_time_quad_shared_conversion
+attention_score_time_tile=four_rows_shared_query_experimental
+mode=real_model_decode_throughput
+profiling_roi=disabled
+itt_control_callbacks=not_requested
+prompt_tokens=1
+warmup_steps=8
+timed_steps=128
+cpu_affinity=4
+VTUNE_ROI_BEGIN
+VTUNE_ROI_END
+status=PASS
+wall_seconds=6.477332
+completed_steps=128
+steps_per_second=19.761224
+worker_start_cpu_0=4
+worker_end_cpu_0=4
+final_token=30
+token_checksum=0x4f9cb9a464361ddf
+last_logits_checksum=0x796b3ffb22c87b08

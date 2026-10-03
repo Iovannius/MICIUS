@@ -1,0 +1,30 @@
+{
+  "archive": "upload/01-cf7-windows-20261002-031136-hyyn_2in.zip",
+  "archive_sha256": "b68d1748514e87fa4fa13b7ab792b5f447246ad221ee9908998d13e7453a2111",
+  "members": [
+    {
+      "path": "BASE/micius_cli.exe",
+      "sha256": "404035f254f2023d1aed8906fc5f7b737c998b74814510fbc5ef59784dc5ac70"
+    },
+    {
+      "path": "BASE/micius_cli.pdb",
+      "sha256": "2bd6eea2da74e5be8e9249f6004ec46291aa51131fe278b12252c359933736e1"
+    },
+    {
+      "path": "disassembly-BASE.stdout.txt",
+      "sha256": "84f431203a87b22f2ff15a3e76ade51452540c341422f72e70cea9784fe6dcf6"
+    },
+    {
+      "path": "CF5/micius_cli.exe",
+      "sha256": "afce9ba65abcc75255072f094ac5f7e5c2e2b37007ff2c2928289f79f146813d"
+    },
+    {
+      "path": "CF5/micius_cli.pdb",
+      "sha256": "643b328236d3297bd7f1548f8302e47cfdc3f77dd36571a73f015e344be55d44"
+    },
+    {
+      "path": "disassembly-CF5.stdout.txt",
+      "sha256": "3d61966d47d46fc9a54eb50c78993973419d6bfd8abbefe6bae117017516a435"
+    }
+  ]
+}
