@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(MICIUS VERSION 0.6.0 LANGUAGES CXX)
+project(MICIUS VERSION 0.7.0 LANGUAGES CXX)
 
 include(CTest)
 include(CheckCXXCompilerFlag)
@@ -12,6 +12,30 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Release profiles set coherent defaults on a fresh build tree. CUSTOM retains
+# the low-level switches for reproducing historical experiments.
+set(_default_backend INT8)
+if(MSVC OR NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    set(_default_backend F64)
+endif()
+set(MICIUS_BACKEND "${_default_backend}" CACHE STRING "Numerical backend: INT8, F64, or CUSTOM")
+set_property(CACHE MICIUS_BACKEND PROPERTY STRINGS INT8 F64 CUSTOM)
+if(NOT MICIUS_BACKEND MATCHES "^(INT8|F64|CUSTOM)$")
+    message(FATAL_ERROR "MICIUS_BACKEND must be INT8, F64, or CUSTOM")
+endif()
+set(_release_simd OFF)
+set(_int8 OFF)
+set(_f64 OFF)
+set(_w8a8 OFF)
+if(MICIUS_BACKEND STREQUAL "INT8")
+    set(_release_simd ON)
+    set(_int8 ON)
+    set(_w8a8 AVX2)
+elseif(MICIUS_BACKEND STREQUAL "F64")
+    set(_release_simd ON)
+    set(_f64 ON)
+endif()
 
 # Keep the original cache-variable interface used by existing build scripts.
 set(ARCH "native" CACHE STRING
@@ -35,16 +59,52 @@ option(MICIUS_BENCHMARK_ITT
 set(MICIUS_ITT_ROOT "" CACHE PATH
     "ITT SDK root containing include/ittnotify.h and src/ittnotify/ittnotify_static.c")
 option(MICIUS_REFERENCE_GEMV_AVX2
-       "Route reference-mode GEMV calls through the experimental checked Q8_32 AVX2 backend" OFF)
+       "Route reference-mode GEMV calls through the checked Q8_32 AVX2 backend" ${_release_simd})
 option(MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2
-       "Use the experimental two-row shared-input/direct-weight-load Q8_32 AVX2 backend" OFF)
+       "Use the two-row shared-input/direct-weight-load Q8_32 AVX2 backend" ${_release_simd})
 option(MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES
-       "Use the prevalidated GEMV entry only for models owned by the private V1 binding boundary" OFF)
+       "Use the prevalidated GEMV entry only for models owned by the private V1 binding boundary" ${_release_simd})
 option(MICIUS_REFERENCE_GEMV_PREPARED_F64
-       "Prepare one validated F64 activation snapshot for reference row-pair GEMV" OFF)
+       "Prepare one validated F64 activation snapshot for reference row-pair GEMV" ${_f64})
 set(MICIUS_PW2_SELECTION "NONE" CACHE STRING "PW2 experimental weight snapshot: NONE, QKV, O")
 set_property(CACHE MICIUS_PW2_SELECTION PROPERTY STRINGS NONE QKV O)
 set(MICIUS_PW2_BUDGET_MIB "512" CACHE STRING "Maximum extra raw F32 weight payload per binding")
+set(MICIUS_I1_BACKEND "${_w8a8}" CACHE STRING "I1 approximate W8A8: OFF, SCALAR, AVX2")
+set_property(CACHE MICIUS_I1_BACKEND PROPERTY STRINGS OFF SCALAR AVX2)
+option(MICIUS_I2_DIAGNOSTICS "Private same-input INT8 diagnosis; never use for timing" OFF)
+option(MICIUS_I3_INTERVENTION "Private controlled FFN precision experiment; never use for timing" OFF)
+option(MICIUS_I4_EVALUATION "Private fixed-token teacher-forced NLL evaluator" OFF)
+option(MICIUS_I6_BENCHMARK "Private fixed-natural-input Windows performance evaluator" OFF)
+option(MICIUS_I10_VALUE64 "Order-preserving AVX2 Value64" ${_int8})
+option(MICIUS_I11_SCORE64 "Ordered chronological Score64" ${_int8})
+option(MICIUS_I13_GEMV4 "Exact four-row W8A8 AVX2 consumption" ${_int8})
+option(MICIUS_I15_VALUE_TILE32 "Exact tiled Value64" ${_int8})
+option(MICIUS_I17_SCORE_REUSE "Reuse exact Score64 query conversion" ${_int8})
+option(MICIUS_I19_SCORE_GROUP3 "Reuse Key data across three query heads" ${_int8})
+option(MICIUS_I22_RELEASE_LOADER_SCALES "Release copied loader descriptors after successful bind" ${_int8})
+option(MICIUS_I25_PANEL_GEMV "I25 private four-row W8A8 panels" ${_int8})
+set(MICIUS_I4_POLICY "NONE" CACHE STRING "Private continuous-context precision policy: NONE, L31_GU, L3_L31_FFN, F64_ALL")
+set_property(CACHE MICIUS_I4_POLICY PROPERTY STRINGS NONE L31_GU L3_L31_FFN F64_ALL)
+if(MICIUS_I4_POLICY STREQUAL "NONE")
+    set(MICIUS_I4_MODE 0)
+elseif(MICIUS_I4_POLICY STREQUAL "L31_GU")
+    set(MICIUS_I4_MODE 1)
+elseif(MICIUS_I4_POLICY STREQUAL "L3_L31_FFN")
+    set(MICIUS_I4_MODE 2)
+elseif(MICIUS_I4_POLICY STREQUAL "F64_ALL")
+    set(MICIUS_I4_MODE 3)
+else()
+    message(FATAL_ERROR "Unknown I4 precision policy")
+endif()
+if(MICIUS_I1_BACKEND STREQUAL "OFF")
+    set(MICIUS_I1_MODE 0)
+elseif(MICIUS_I1_BACKEND STREQUAL "SCALAR")
+    set(MICIUS_I1_MODE 1)
+elseif(MICIUS_I1_BACKEND STREQUAL "AVX2")
+    set(MICIUS_I1_MODE 2)
+else()
+    message(FATAL_ERROR "I1 backend must be OFF, SCALAR or AVX2")
+endif()
 if(NOT MICIUS_PW2_BUDGET_MIB MATCHES "^(0|[1-9][0-9]*)$" OR MICIUS_PW2_BUDGET_MIB GREATER 1048576)
     message(FATAL_ERROR "PW2 budget must be an integer in [0,1048576] MiB")
 endif()
@@ -60,11 +120,63 @@ endif()
 option(MICIUS_REFERENCE_GEMV_COMPACT_SCALES
        "Store one private F32 scale per validated Q8_32 block for reference GEMV" OFF)
 option(MICIUS_REFERENCE_ATTENTION_VALUE_AVX2
-       "Route reference attention V aggregation through the order-preserving AVX2 backend" OFF)
+       "Route reference attention V aggregation through the order-preserving AVX2 backend" ${_release_simd})
 option(MICIUS_REFERENCE_ATTENTION_QUERY_F64_CACHE
        "Convert each reference attention query head to exact F64 once before its key scan" OFF)
 option(MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD
-       "Evaluate four ordered reference attention key rows while sharing each query conversion" OFF)
+       "Evaluate four ordered reference attention key rows while sharing each query conversion" ${_release_simd})
+# A release build must never silently become a historical ablation through
+# stale cache entries. Switch profiles in separate build directories.
+if(_release_simd AND (NOT MICIUS_REFERENCE_GEMV_AVX2 OR NOT MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2
+   OR NOT MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES OR NOT MICIUS_REFERENCE_ATTENTION_VALUE_AVX2
+   OR NOT MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD OR MICIUS_REFERENCE_GEMV_COMPACT_SCALES
+   OR MICIUS_ENABLE_FAST_MATH OR NOT MICIUS_PW2_SELECTION STREQUAL "NONE"
+   OR MICIUS_I2_DIAGNOSTICS OR MICIUS_I3_INTERVENTION OR MICIUS_I4_MODE
+   OR MICIUS_DECODE_PROFILE OR MICIUS_BENCHMARK_ITT))
+    message(FATAL_ERROR "Release profile and cached options disagree. Use a fresh build directory or MICIUS_BACKEND=CUSTOM.")
+endif()
+if(_int8 AND (NOT MICIUS_I1_MODE EQUAL 2 OR NOT MICIUS_I25_PANEL_GEMV OR NOT MICIUS_I22_RELEASE_LOADER_SCALES
+   OR NOT MICIUS_I13_GEMV4 OR NOT MICIUS_I15_VALUE_TILE32 OR NOT MICIUS_I17_SCORE_REUSE OR NOT MICIUS_I19_SCORE_GROUP3))
+    message(FATAL_ERROR "The INT8 release requires the complete I25 configuration.")
+endif()
+if(_f64 AND (MICIUS_I1_MODE OR NOT MICIUS_REFERENCE_GEMV_PREPARED_F64))
+    message(FATAL_ERROR "The F64 release requires prepared F64 inputs and W8A8 OFF.")
+endif()
+message(STATUS "MICIUS ${PROJECT_VERSION}: ${MICIUS_BACKEND} backend")
+
+if(MICIUS_I1_MODE AND (MICIUS_REFERENCE_GEMV_PREPARED_F64 OR
+    NOT MICIUS_REFERENCE_GEMV_AVX2 OR NOT MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES OR
+    MICIUS_REFERENCE_GEMV_COMPACT_SCALES OR MICIUS_ENABLE_FAST_MATH OR
+    NOT MICIUS_PW2_SELECTION STREQUAL "NONE" OR MICIUS_DECODE_PROFILE OR MICIUS_BENCHMARK_ITT))
+    message(FATAL_ERROR "I1 requires strict AVX2/prevalidated descriptor scales; prepared-F64, PW2, compact, D1 and ITT OFF")
+endif()
+if(MICIUS_I2_DIAGNOSTICS AND (NOT MICIUS_REFERENCE_GEMV_AVX2 OR
+   NOT MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2 OR NOT MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES OR
+   MICIUS_REFERENCE_GEMV_COMPACT_SCALES OR MICIUS_ENABLE_FAST_MATH OR
+   NOT MICIUS_PW2_SELECTION STREQUAL "NONE" OR MICIUS_DECODE_PROFILE OR MICIUS_BENCHMARK_ITT OR
+   (NOT MICIUS_I1_MODE AND NOT MICIUS_REFERENCE_GEMV_PREPARED_F64)))
+    message(FATAL_ERROR "I2 requires the accepted F64 or I1 configuration; no PW2, fast-math, compact, D1 or ITT")
+endif()
+if(MICIUS_I3_INTERVENTION AND (NOT MICIUS_I1_BACKEND STREQUAL "AVX2" OR
+   NOT MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2 OR MICIUS_I2_DIAGNOSTICS))
+    message(FATAL_ERROR "I3 requires strict I1 AVX2/row-pair configuration and I2 diagnostics OFF")
+endif()
+if(MICIUS_I4_MODE AND (NOT MICIUS_I1_BACKEND STREQUAL "AVX2" OR
+   NOT MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2 OR MICIUS_I2_DIAGNOSTICS OR MICIUS_I3_INTERVENTION))
+    message(FATAL_ERROR "I4 mixed precision requires strict I1 AVX2/row-pair; I2 and I3 OFF")
+endif()
+if((MICIUS_I4_EVALUATION OR MICIUS_I6_BENCHMARK) AND (MICIUS_I2_DIAGNOSTICS OR MICIUS_I3_INTERVENTION OR
+   NOT MICIUS_REFERENCE_GEMV_AVX2 OR NOT MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2 OR
+   NOT MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES OR MICIUS_REFERENCE_GEMV_COMPACT_SCALES OR
+   MICIUS_ENABLE_FAST_MATH OR NOT MICIUS_PW2_SELECTION STREQUAL "NONE" OR
+   MICIUS_DECODE_PROFILE OR MICIUS_BENCHMARK_ITT OR MICIUS_I1_MODE EQUAL 1 OR
+   (NOT MICIUS_I1_MODE AND NOT MICIUS_REFERENCE_GEMV_PREPARED_F64)))
+    message(FATAL_ERROR "I4 evaluation requires the accepted strict F64 or I1 AVX2 configuration and no other instrumentation")
+endif()
+
+if(MICIUS_I6_BENCHMARK AND (NOT WIN32 OR MICIUS_I4_EVALUATION OR MICIUS_I4_MODE))
+    message(FATAL_ERROR "I6 requires Windows and uninstrumented F64/I1; I4 evaluation and mixed policy OFF")
+endif()
 
 if(MICIUS_PW2_MODE AND (NOT MICIUS_REFERENCE_GEMV_PREPARED_F64 OR
    NOT MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES OR MICIUS_REFERENCE_GEMV_COMPACT_SCALES))
@@ -229,6 +341,18 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
             "MICIUS_ENABLE_FAST_MATH is ON: non-finite tensor validation is not guaranteed")
     endif()
 
+    if(_int8)
+        # Keep code generation and LTO within the qualified no-VNNI contract
+        # even when -march=native would enable additional dot instructions.
+        foreach(feature avxvnni avx512vnni avxvnniint8 avxvnniint16)
+            check_cxx_compiler_flag("-mno-${feature}" MICIUS_HAS_DISABLE_${feature})
+            if(MICIUS_HAS_DISABLE_${feature})
+                target_compile_options(micius_build_options INTERFACE "-mno-${feature}")
+                target_link_options(micius_build_options INTERFACE "-mno-${feature}")
+            endif()
+        endforeach()
+    endif()
+
     # Retain the original Windows/Clang CodeView behavior.
     if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(micius_build_options INTERFACE -gcodeview)
@@ -246,11 +370,75 @@ file(GLOB_RECURSE ALL_SRC_FILES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
 )
 
+if(MICIUS_I10_VALUE64)
+    if(NOT MICIUS_I1_MODE EQUAL 2 OR NOT MICIUS_REFERENCE_ATTENTION_VALUE_AVX2 OR
+       MICIUS_I2_DIAGNOSTICS OR MICIUS_I3_INTERVENTION OR MICIUS_I4_EVALUATION OR MICIUS_I4_MODE)
+        message(FATAL_ERROR "I10 requires uninstrumented I1 AVX2 and original Value AVX2 fallback")
+    endif()
+else()
+    list(FILTER ALL_SRC_FILES EXCLUDE REGEX "I10AttentionValue\\.cpp$")
+endif()
+
+if(MICIUS_I11_SCORE64)
+    if(NOT MICIUS_I10_VALUE64 OR NOT MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD)
+        message(FATAL_ERROR "I11 requires accepted I10 Value64 and original TimeQuad reference")
+    endif()
+else()
+    list(FILTER ALL_SRC_FILES EXCLUDE REGEX "I11AttentionScore\\.cpp$")
+endif()
+
+if(MICIUS_I13_GEMV4)
+    if(NOT MICIUS_I11_SCORE64 OR NOT MICIUS_I1_MODE EQUAL 2 OR MICIUS_DECODE_PROFILE)
+        message(FATAL_ERROR "I13 requires uninstrumented accepted I11 AVX2")
+    endif()
+else()
+    list(FILTER ALL_SRC_FILES EXCLUDE REGEX "I13W8A8GEMV\\.cpp$")
+endif()
+
+if(MICIUS_I15_VALUE_TILE32)
+    if(NOT MICIUS_I13_GEMV4 OR NOT MICIUS_I10_VALUE64 OR MICIUS_DECODE_PROFILE)
+        message(FATAL_ERROR "I15 requires uninstrumented accepted I13")
+    endif()
+else()
+    list(FILTER ALL_SRC_FILES EXCLUDE REGEX "I15AttentionValue\\.cpp$")
+endif()
+
+if(MICIUS_I17_SCORE_REUSE)
+    if(NOT MICIUS_I15_VALUE_TILE32 OR NOT MICIUS_I11_SCORE64 OR MICIUS_DECODE_PROFILE)
+        message(FATAL_ERROR "I17 requires uninstrumented accepted I15")
+    endif()
+else()
+    list(FILTER ALL_SRC_FILES EXCLUDE REGEX "I17AttentionScore\\.cpp$")
+endif()
+
+if(MICIUS_I19_SCORE_GROUP3)
+    if(NOT MICIUS_I17_SCORE_REUSE OR MICIUS_DECODE_PROFILE)
+        message(FATAL_ERROR "I19 requires uninstrumented accepted I17")
+    endif()
+else()
+    list(FILTER ALL_SRC_FILES EXCLUDE REGEX "I19AttentionScore\\.cpp$")
+endif()
+
 set(MICIUS_CLI_MAIN_SOURCES ${ALL_SRC_FILES})
 list(FILTER MICIUS_CLI_MAIN_SOURCES INCLUDE REGEX "MiciusCLIMain\\.cpp$")
 
 set(MICIUS_CORE_SOURCES ${ALL_SRC_FILES})
 list(FILTER MICIUS_CORE_SOURCES EXCLUDE REGEX "MiciusCLIMain\\.cpp$")
+if(NOT MICIUS_I6_BENCHMARK)
+    list(FILTER MICIUS_CORE_SOURCES EXCLUDE REGEX "I6Benchmark\\.cpp$")
+endif()
+if(NOT MICIUS_I2_DIAGNOSTICS)
+    list(FILTER MICIUS_CORE_SOURCES EXCLUDE REGEX "I2Diagnostic\\.cpp$")
+endif()
+if(NOT MICIUS_I3_INTERVENTION)
+    list(FILTER MICIUS_CORE_SOURCES EXCLUDE REGEX "I3Intervention\\.cpp$")
+endif()
+if(NOT MICIUS_I4_EVALUATION)
+    list(FILTER MICIUS_CORE_SOURCES EXCLUDE REGEX "I4Evaluation\\.cpp$")
+endif()
+if(NOT MICIUS_I4_MODE AND NOT MICIUS_I4_EVALUATION)
+    list(FILTER MICIUS_CORE_SOURCES EXCLUDE REGEX "I4MixedPrecision\\.cpp$")
+endif()
 
 if(NOT MICIUS_CORE_SOURCES)
     message(FATAL_ERROR "No MICIUS core sources were found below src/")
@@ -261,6 +449,23 @@ endif()
 # uses separate rounding too, including scalar tails. Strict options are source
 # options and therefore follow target/global optimization options.
 set(MICIUS_GEMV_STRICT_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/I6Benchmark.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/I4MixedPrecision.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/app/I4Evaluation.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/i4_evaluation_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/I3Intervention.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/i3_intervention_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/I2Diagnostic.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/i2_diagnostic_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/ReferenceW8A8GEMVAVX2.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/I13W8A8GEMV.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/i25/PanelGEMV.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/i25_panel_contract.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/i25_ownership_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/I15AttentionValue.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/i15_attention_value_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/i13_w8a8_gemv_tests.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/w8a8_gemv_tests.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/ReferenceF32WeightGEMVAVX2.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/PreparedGEMVWeights.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/prepared_weight_tests.cpp"
@@ -278,7 +483,59 @@ endif()
 
 add_library(micius_core STATIC ${MICIUS_CORE_SOURCES})
 add_library(MICIUS::core ALIAS micius_core)
+if(MICIUS_I19_SCORE_GROUP3)
+    target_compile_definitions(micius_core PRIVATE MICIUS_I19_SCORE_GROUP3=1)
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/I19AttentionScore.cpp"
+        APPEND PROPERTY COMPILE_OPTIONS -fno-fast-math -ffp-contract=on)
+endif()
+
+if(MICIUS_I17_SCORE_REUSE)
+    target_compile_definitions(micius_core PRIVATE MICIUS_I17_SCORE_REUSE=1)
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/I17AttentionScore.cpp"
+        APPEND PROPERTY COMPILE_OPTIONS -fno-fast-math -ffp-contract=on)
+endif()
+
+if(MICIUS_I15_VALUE_TILE32)
+    target_compile_definitions(micius_core PRIVATE MICIUS_I15_VALUE_TILE32=1)
+endif()
+if(MICIUS_I13_GEMV4)
+    target_compile_definitions(micius_core PRIVATE MICIUS_I13_GEMV4=1)
+endif()
+
+if(MICIUS_I11_SCORE64)
+    target_compile_definitions(micius_core PRIVATE MICIUS_I11_SCORE64=1)
+    # Match the original Score expression contraction policy, while keeping
+    # reassociation off. Explicit SIMD uses F64 FMA across independent rows.
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/I11AttentionScore.cpp"
+        APPEND PROPERTY COMPILE_OPTIONS -fno-fast-math -ffp-contract=on)
+endif()
+
+if(MICIUS_I10_VALUE64)
+    target_compile_definitions(micius_core PRIVATE MICIUS_I10_VALUE64=1)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+        set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/I10AttentionValue.cpp"
+            APPEND PROPERTY COMPILE_OPTIONS -fno-fast-math -ffp-contract=off)
+    else()
+        message(FATAL_ERROR "I10 experimental build is scoped to Clang/GNU AVX2")
+    endif()
+endif()
+
+if(MICIUS_I6_BENCHMARK)
+    target_compile_definitions(micius_core PRIVATE MICIUS_I6_BENCHMARK=1)
+    target_link_libraries(micius_core PRIVATE psapi)
+endif()
+if(MICIUS_I2_DIAGNOSTICS)
+    target_compile_definitions(micius_core PRIVATE MICIUS_I2_DIAGNOSTICS=1)
+endif()
+if(MICIUS_I3_INTERVENTION)
+    target_compile_definitions(micius_core PRIVATE MICIUS_I3_INTERVENTION=1)
+endif()
+if(MICIUS_I4_EVALUATION)
+    target_compile_definitions(micius_core PRIVATE MICIUS_I4_EVALUATION=1)
+endif()
 target_compile_definitions(micius_core PRIVATE
+    MICIUS_I4_MODE=${MICIUS_I4_MODE}
+    MICIUS_I1_MODE=${MICIUS_I1_MODE}
     MICIUS_PW2_MODE=${MICIUS_PW2_MODE} MICIUS_PW2_BUDGET_MIB=${MICIUS_PW2_BUDGET_MIB})
 
 if(MICIUS_BENCHMARK_ITT)
@@ -309,31 +566,24 @@ endif()
 
 if(MICIUS_REFERENCE_GEMV_AVX2)
     target_compile_definitions(micius_core PRIVATE MICIUS_REFERENCE_GEMV_AVX2=1)
-    message(WARNING
-        "MICIUS_REFERENCE_GEMV_AVX2 is ON: reference-mode GEMV uses the experimental "
-        "AVX2 backend and is no longer the scalar-double oracle")
+    message(STATUS "Checked AVX2 kernels enabled")
 endif()
 
 if(MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2)
     target_compile_definitions(micius_core PRIVATE
         MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2=1)
-    message(WARNING
-        "MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2 is ON: reference-mode GEMV uses "
-        "the experimental two-row shared-input/direct-weight-load AVX2 backend")
+    message(STATUS "AVX2 row-pair reference kernels available")
 endif()
 
 if(MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES)
     target_compile_definitions(micius_core PRIVATE
         MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES=1)
-    message(WARNING
-        "MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES is ON: only models accepted "
-        "by the private V1 validated-binding boundary use the fast scale path; "
-        "all other engine states retain checked GEMV")
+    message(STATUS "V1 binding validates descriptors")
 endif()
 
 if(MICIUS_REFERENCE_GEMV_PREPARED_F64)
     target_compile_definitions(micius_core PRIVATE MICIUS_REFERENCE_GEMV_PREPARED_F64=1)
-    message(WARNING "Prepared F64 GEMV input ON: invocation-scoped snapshot; Q8 weights retained")
+    message(STATUS "Prepared F64 GEMV input ON: invocation-scoped snapshot; Q8 weights retained")
 endif()
 
 if(MICIUS_REFERENCE_GEMV_COMPACT_SCALES)
@@ -347,9 +597,7 @@ endif()
 if(MICIUS_REFERENCE_ATTENTION_VALUE_AVX2)
     target_compile_definitions(micius_core PRIVATE
         MICIUS_REFERENCE_ATTENTION_VALUE_AVX2=1)
-    message(WARNING
-        "MICIUS_REFERENCE_ATTENTION_VALUE_AVX2 is ON: reference-mode attention "
-        "V aggregation uses the experimental order-preserving AVX2 backend")
+    message(STATUS "Ordered AVX2 Value fallback available")
 endif()
 
 if(MICIUS_REFERENCE_ATTENTION_QUERY_F64_CACHE)
@@ -364,10 +612,7 @@ endif()
 if(MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD)
     target_compile_definitions(micius_core PRIVATE
         MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD=1)
-    message(WARNING
-        "MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD is ON: reference attention "
-        "scores evaluate four chronological key rows together while sharing "
-        "each exact F32-to-F64 query conversion")
+    message(STATUS "Ordered time-quad Score fallback available")
 endif()
 
 target_include_directories(micius_core PUBLIC
@@ -493,6 +738,7 @@ if(MICIUS_BUILD_CLI)
     endif()
 
     add_executable(micius_cli ${MICIUS_CLI_MAIN_SOURCES})
+    target_compile_definitions(micius_cli PRIVATE MICIUS_VERSION_STRING="${PROJECT_VERSION}")
     target_link_libraries(micius_cli PRIVATE micius_core Threads::Threads)
     micius_configure_executable(micius_cli)
 endif()
@@ -543,8 +789,7 @@ endif()
 
 function(micius_add_contract_test target_name source_file)
     if(NOT EXISTS "${source_file}")
-        message(WARNING "Skipping ${target_name}: source not found at ${source_file}")
-        return()
+        message(FATAL_ERROR "Missing contract test ${target_name}: ${source_file}")
     endif()
 
     add_executable(${target_name} "${source_file}")
@@ -563,9 +808,31 @@ function(micius_add_contract_test target_name source_file)
     add_test(NAME ${target_name} COMMAND $<TARGET_FILE:${target_name}>)
 endfunction()
 
+if(MICIUS_I2_DIAGNOSTICS)
+    add_executable(micius_i2_replay tests/reference/i2_replay.cpp)
+    target_link_libraries(micius_i2_replay PRIVATE micius_core)
+    micius_configure_executable(micius_i2_replay)
+    if(BUILD_TESTING)
+        micius_add_contract_test(i2_diagnostic_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i2_diagnostic_tests.cpp")
+    endif()
+endif()
+
 if(BUILD_TESTING)
+    if(MICIUS_I4_EVALUATION)
+        micius_add_contract_test(i4_evaluation_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i4_evaluation_tests.cpp")
+        target_sources(i4_evaluation_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference/r8_q8_frozen.cpp")
+    endif()
+    if(MICIUS_I3_INTERVENTION)
+        micius_add_contract_test(i3_intervention_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i3_intervention_tests.cpp")
+        target_sources(i3_intervention_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference/r8_q8_frozen.cpp")
+    endif()
+    if(NOT MICIUS_I1_MODE)
     micius_add_contract_test(runtime_contract_tests
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/runtime_contract_tests.cpp")
+    else()
+    micius_add_contract_test(w8a8_runtime_contract_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/w8a8_runtime_contract_tests.cpp")
+    endif()
+    micius_add_contract_test(w8a8_gemv_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/w8a8_gemv_tests.cpp")
     micius_add_contract_test(gguf_parser_tests
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/gguf_parser_tests.cpp")
     micius_add_contract_test(tensor_codec_tests
@@ -609,4 +876,69 @@ if(BUILD_TESTING)
         micius_add_contract_test(d1_runtime_contract_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/d1_runtime_contract_tests.cpp")
         target_compile_definitions(d1_runtime_contract_tests PRIVATE MICIUS_DECODE_PROFILE=1)
     endif()
+endif()
+
+if(BUILD_TESTING AND MICIUS_I10_VALUE64)
+    micius_add_contract_test(i10_attention_value_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i10_attention_value_tests.cpp")
+endif()
+
+if(BUILD_TESTING AND MICIUS_I11_SCORE64)
+    micius_add_contract_test(i11_attention_score_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i11_attention_score_tests.cpp")
+endif()
+
+if(BUILD_TESTING AND MICIUS_I13_GEMV4)
+    micius_add_contract_test(i13_w8a8_gemv_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i13_w8a8_gemv_tests.cpp")
+endif()
+
+if(BUILD_TESTING AND MICIUS_I15_VALUE_TILE32)
+    micius_add_contract_test(i15_attention_value_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i15_attention_value_tests.cpp")
+endif()
+
+if(BUILD_TESTING AND MICIUS_I17_SCORE_REUSE)
+    micius_add_contract_test(i17_attention_score_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i17_attention_score_tests.cpp")
+endif()
+
+if(BUILD_TESTING AND MICIUS_I19_SCORE_GROUP3)
+    micius_add_contract_test(i19_attention_score_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i19_attention_score_tests.cpp")
+endif()
+
+# Descriptor copies become releasable after a successful checked bind.
+if(MICIUS_I22_RELEASE_LOADER_SCALES)
+  if(NOT MICIUS_I19_SCORE_GROUP3 OR NOT MICIUS_I1_MODE EQUAL 2)
+    message(FATAL_ERROR "Loader descriptor retirement requires the I19 AVX2 binding configuration.")
+  endif()
+  set_property(SOURCE src/app/MiciusShell.cpp APPEND PROPERTY COMPILE_DEFINITIONS MICIUS_I22_RELEASE_LOADER_SCALES=1)
+endif()
+if(BUILD_TESTING)
+  micius_add_contract_test(i22_loader_lifetime_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i22_loader_lifetime_tests.cpp")
+  target_include_directories(i22_loader_lifetime_tests PRIVATE include src)
+endif()
+
+if(MICIUS_I25_PANEL_GEMV)
+  if(NOT MICIUS_I22_RELEASE_LOADER_SCALES OR NOT MICIUS_I1_MODE EQUAL 2 OR
+     MICIUS_ENABLE_FAST_MATH OR MICIUS_REFERENCE_GEMV_COMPACT_SCALES OR
+     NOT MICIUS_PW2_SELECTION STREQUAL "NONE" OR MICIUS_I2_DIAGNOSTICS OR
+     MICIUS_I3_INTERVENTION OR MICIUS_I4_EVALUATION OR MICIUS_DECODE_PROFILE)
+    message(FATAL_ERROR "I25 requires uninstrumented strict I22 AVX2 configuration")
+  endif()
+  set_property(SOURCE src/AI/AICoreEngine.cpp APPEND PROPERTY COMPILE_DEFINITIONS MICIUS_I25_PANEL_GEMV=1)
+endif()
+target_include_directories(micius_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/AI/i25")
+if(BUILD_TESTING)
+  micius_add_contract_test(i25_panel_contract "${CMAKE_CURRENT_SOURCE_DIR}/tests/i25_panel_contract.cpp")
+  target_include_directories(i25_panel_contract PRIVATE src/AI/i25)
+  if(MICIUS_I25_PANEL_GEMV)
+    micius_add_contract_test(i25_ownership_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i25_ownership_tests.cpp")
+  endif()
+endif()
+
+if(BUILD_TESTING AND MICIUS_BUILD_CLI AND _release_simd)
+    find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+    set(_trace_check)
+    if(WIN32 AND MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        set(_trace_check --golden)
+    endif()
+    add_test(NAME release_cli_contract
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_release_tests.py"
+                $<TARGET_FILE:micius_cli> "${MICIUS_BACKEND}" ${_trace_check})
 endif()

@@ -1,7 +1,21 @@
 {
   "version": 3,
-  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
   "configurePresets": [
+    {
+      "name": "int8-release-windows",
+      "displayName": "v0.7 INT8 (Windows Clang64, AVX2 without VNNI)",
+      "inherits": "f64-reference-windows",
+      "binaryDir": "${sourceDir}/build-int8-release",
+      "cacheVariables": {
+        "MICIUS_BACKEND": "INT8",
+        "MICIUS_REFERENCE_GEMV_PREPARED_F64": "OFF"
+      }
+    },
     {
       "name": "f64-reference-windows",
       "displayName": "Accepted F64 reference (Windows Clang64)",
@@ -31,19 +45,43 @@
         "MICIUS_PW2_SELECTION": "NONE",
         "MICIUS_PW2_BUDGET_MIB": "512",
         "MICIUS_DECODE_PROFILE": "OFF",
-        "MICIUS_BENCHMARK_ITT": "OFF"
+        "MICIUS_BENCHMARK_ITT": "OFF",
+        "MICIUS_BACKEND": "F64"
       }
     }
   ],
   "buildPresets": [
-    { "name": "f64-reference-windows", "configurePreset": "f64-reference-windows", "jobs": 8 }
-  ],
-  "testPresets": [
+    {
+      "name": "int8-release-windows",
+      "configurePreset": "int8-release-windows",
+      "jobs": 8
+    },
     {
       "name": "f64-reference-windows",
       "configurePreset": "f64-reference-windows",
-      "output": { "outputOnFailure": true },
-      "execution": { "noTestsAction": "error" }
+      "jobs": 8
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "int8-release-windows",
+      "configurePreset": "int8-release-windows",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "f64-reference-windows",
+      "configurePreset": "f64-reference-windows",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
     }
   ]
 }

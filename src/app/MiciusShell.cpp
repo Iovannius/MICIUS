@@ -1,5 +1,12 @@
+#include "BackendInfo.h"
+#include "I25LoaderLifetime.h"
 #include "MiciusShell.h"
+#include "I22LoaderLifetime.h"
+#include "I22Memory.h"
 #include "MiciusTensorCodec.h"
+#if defined(MICIUS_I4_EVALUATION)
+#include "I4Evaluation.h"
+#endif
 #include "BenchmarkIttRoi.h"
 #include "AI/DecodeProfile.h"
 #include "AI/PreparedGEMVWeights.h"
@@ -77,67 +84,30 @@ static MiciusTensorEntryV1 MakeBridgeEntry(
     return entry;
 }
 
-static const char* BenchmarkGEMVBackendName() noexcept
-{
-#if defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
-    return "q8_32_prepared_f64_avx2_row_pair_experimental";
-#elif defined(MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2)
-    return "q8_32_f32_avx2_row_pair_direct_load_experimental";
-#elif defined(MICIUS_REFERENCE_GEMV_AVX2)
-    return "q8_32_f32_avx2_experimental";
-#else
-    return "scalar_double_reference";
-#endif
+#if defined(MICIUS_I6_BENCHMARK)
+static void I22Ledger(const char* phase,const ShellContext* ctx,
+    const std::vector<MiciusTensorEntryV1>& entries,size_t released=0) {
+    if(!micius::i22::Observing())return;
+    std::ostringstream x;size_t bytes=0,scales=0,weights=0,f32=0,count=0;
+    x<<",\"allocations\":[";
+    for(const auto& e:entries) {
+        if(std::find(ctx->managed_buffers.begin(),ctx->managed_buffers.end(),e.tensor_data)==ctx->managed_buffers.end())continue;
+        if(count++)x<<',';
+        x<<"{\"name\":"<<micius::i22::Quote(e.tensor_name)<<",\"type\":"<<e.data_type<<",\"requested_bytes\":"<<e.byte_size<<",\"alignment\":64}";
+        bytes+=e.byte_size;
+        if(e.data_type==MICIUS_TENSOR_Q8_32_SCALE)scales+=e.byte_size;
+        else if(e.data_type==MICIUS_TENSOR_Q8_32_WEIGHT)weights+=e.byte_size;
+        else f32+=e.byte_size;
+    }
+    x<<"],\"shell_owned_buffers\":"<<ctx->managed_buffers.size()<<",\"shell_requested_bytes\":"<<bytes
+     <<",\"shell_public_scale_bytes\":"<<scales<<",\"shell_q8_weight_bytes\":"<<weights
+     <<",\"shell_f32_bytes\":"<<f32<<",\"released_public_scale_bytes\":"<<released;
+    micius::i22::Memory(phase,x.str());
 }
 
-static const char* BenchmarkScaleValidationName() noexcept
-{
-#if defined(MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES)
-    return "private_v1_prevalidated_checked_fallback";
 #else
-    return "per_call_checked";
+static void I22Ledger(const char*, const ShellContext*, const std::vector<MiciusTensorEntryV1>&, size_t = 0) noexcept {}
 #endif
-}
-
-static const char* BenchmarkScaleStorageName() noexcept
-{
-#if defined(MICIUS_REFERENCE_GEMV_COMPACT_SCALES)
-    return "private_f32_per_block_experimental";
-#elif defined(MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES)
-    return "private_q8_32_descriptor_per_block";
-#else
-    return "q8_32_descriptor_checked";
-#endif
-}
-
-static const char* BenchmarkAttentionValueName() noexcept
-{
-#if defined(MICIUS_REFERENCE_ATTENTION_VALUE_AVX2)
-    return "f32_f64_avx2_order_preserving_experimental";
-#else
-    return "scalar_f64_reference";
-#endif
-}
-
-static const char* BenchmarkAttentionQueryCacheName() noexcept
-{
-#if defined(MICIUS_REFERENCE_ATTENTION_QUERY_F64_CACHE)
-    return "per_head_exact_f64_experimental";
-#elif defined(MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD)
-    return "none_time_quad_shared_conversion";
-#else
-    return "per_dot_f32_to_f64";
-#endif
-}
-
-static const char* BenchmarkAttentionTimeTileName() noexcept
-{
-#if defined(MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD)
-    return "four_rows_shared_query_experimental";
-#else
-    return "single_row";
-#endif
-}
 
 static int CurrentProcessorForBenchmark() noexcept
 {
@@ -439,9 +409,15 @@ void MiciusShell::RunREPL()
 
 int MiciusShell::RunModelBenchmark(const std::vector<std::string>& args)
 {
+#if defined(MICIUS_I6_BENCHMARK)
+    if (!args.empty() && args.front()=="--i6-mode") return RunI6Benchmark(args);
+#endif
     struct BenchmarkOptions {
         std::string model_path;
         std::string pw2_parity_path;
+#if defined(MICIUS_I4_EVALUATION)
+        std::string i4_tokens, i4_output;
+#endif
         uint64_t warmup_steps = 0;
         uint64_t timed_steps = 0;
         uint32_t cpu_id = 0;
@@ -476,6 +452,14 @@ int MiciusShell::RunModelBenchmark(const std::vector<std::string>& args)
             print_usage();
             return 0;
         }
+#if defined(MICIUS_I4_EVALUATION)
+        if (argument == "--i4-tokens" || argument == "--i4-output") {
+            const std::string* value=require_value(&i,argument.c_str());
+            if (!value || value->empty()) return fail("I4 options require nonempty paths");
+            (argument=="--i4-tokens" ? options.i4_tokens : options.i4_output)=*value;
+            continue;
+        }
+#endif
         if (argument == "--model") {
             const std::string* value = require_value(&i, "--model");
             if (!value) return 2;
@@ -527,8 +511,19 @@ int MiciusShell::RunModelBenchmark(const std::vector<std::string>& args)
     }
 
     if (options.model_path.empty()) return fail("--model is required");
+#if defined(MICIUS_I4_EVALUATION)
+    const bool i4_requested=!options.i4_tokens.empty() || !options.i4_output.empty();
+    if (i4_requested) {
+        if (options.i4_tokens.empty() || options.i4_output.empty() || options.steps_explicit ||
+            !options.prompt_tokens.empty() || options.warmup_steps!=0 || options.itt_roi ||
+            options.d1_profile || !options.pw2_parity_path.empty())
+            return fail("I4 requires tokens/output together and no sampling, timing or other diagnostic options");
+    } else
+#endif
+    {
     if (!options.steps_explicit) return fail("--steps is required");
     if (options.prompt_tokens.empty()) return fail("at least one --token is required");
+    }
     if (!options.pw2_parity_path.empty() && (options.prompt_tokens.size()!=1 ||
         options.warmup_steps!=0 || options.itt_roi))
         return fail("PW2 parity uses one repeated fixed token, warmup=0, ITT disabled");
@@ -550,6 +545,14 @@ int MiciusShell::RunModelBenchmark(const std::vector<std::string>& args)
     const auto load_begin = std::chrono::steady_clock::now();
     CmdLoad(this, &ctx, std::vector<std::string>{"load", options.model_path});
     if (!ctx.engine_ctx) return fail("model load or V1 tensor binding failed");
+#if defined(MICIUS_I4_EVALUATION)
+    if (i4_requested) {
+        const int result=micius::i4::EvaluateTokens(ctx.engine_ctx,ctx.engine_config,options.i4_tokens,options.i4_output);
+        if (options.cpu_explicit && CurrentProcessorForBenchmark()!=static_cast<int>(options.cpu_id))
+            return fail("I4 evaluation left requested CPU");
+        return result;
+    }
+#endif
     const double model_load_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - load_begin).count();
     const auto weight_stats = micius::internal::GetPreparedWeightStats(ctx.engine_ctx);
@@ -668,22 +671,21 @@ int MiciusShell::RunModelBenchmark(const std::vector<std::string>& args)
     std::cout
         << "MICIUS real-model reference benchmark\n"
         << "abi=0x" << std::hex << MICIUS_ABI_VERSION << std::dec << '\n'
-        << "gemv_backend=" << BenchmarkGEMVBackendName() << '\n'
+        << "gemv_backend=" << micius::backend::GEMVBackend(ctx.engine_ctx) << '\n'
 #if defined(MICIUS_REFERENCE_GEMV_AVX2)
         << "gemv_fp_contract=off\n"
 #else
         << "gemv_fp_contract=compiler_default_scalar_reference\n"
 #endif
-#if defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
-        << "gemv_input_preparation=f64_snapshot_per_input\n"
-#else
-        << "gemv_input_preparation=inline_f32_conversion\n"
+        << "gemv_input_preparation=" << micius::backend::InputPreparation() << '\n'
+#if defined(MICIUS_I1_MODE) && MICIUS_I1_MODE
+        << "gemv_numerical_contract=approximate_w8a8_i1\n"
 #endif
-        << "gemv_scale_validation=" << BenchmarkScaleValidationName() << '\n'
-        << "gemv_scale_storage=" << BenchmarkScaleStorageName() << '\n'
-        << "attention_value_backend=" << BenchmarkAttentionValueName() << '\n'
-        << "attention_score_query_cache=" << BenchmarkAttentionQueryCacheName() << '\n'
-        << "attention_score_time_tile=" << BenchmarkAttentionTimeTileName() << '\n'
+        << "gemv_scale_validation=" << micius::backend::ScaleValidation() << '\n'
+        << "gemv_scale_storage=" << micius::backend::ScaleStorage(ctx.engine_ctx) << '\n'
+        << "attention_value_backend=" << micius::backend::AttentionValue() << '\n'
+        << "attention_score_query_cache=" << micius::backend::QueryCache() << '\n'
+        << "attention_score_time_tile=" << micius::backend::ScoreTile() << '\n'
         << "mode=real_model_decode_throughput\n"
         << "profiling_roi=" << (options.itt_roi ? "itt_decode_only" : "disabled") << '\n'
         << "itt_control_callbacks=" << (options.itt_roi ? "bound" : "not_requested") << '\n'
@@ -895,6 +897,7 @@ void MiciusShell::CmdLoad(MiciusShell* shell, ShellContext* ctx, const std::vect
         return;
     }
 
+    micius::i22::Memory("headers_mapped");
     loader->PrintTopology();
     ctx->engine_config = config;
     ctx->model_parser = loader; 
@@ -912,6 +915,7 @@ void MiciusShell::CmdLoad(MiciusShell* shell, ShellContext* ctx, const std::vect
         return;
     }
 
+    micius::i22::Memory("engine_allocated");
     //解包GGUF并翻译为内核标准INT8权重格式
     std::vector<MiciusTensorEntryV1> bridge_entries;
     const auto& tensors = ctx->model_parser->GetTensors();
@@ -1234,6 +1238,7 @@ void MiciusShell::CmdLoad(MiciusShell* shell, ShellContext* ctx, const std::vect
         return;
     }
 
+    I22Ledger("translated_before_bind",ctx,bridge_entries);
     if (!Micius_BindModelTensorsV1(
             ctx->engine_ctx,
             bridge_entries.data(),
@@ -1250,6 +1255,20 @@ void MiciusShell::CmdLoad(MiciusShell* shell, ShellContext* ctx, const std::vect
         ctx->model_parser = nullptr;
         return;
     }
+
+    I22Ledger("bound_before_cleanup",ctx,bridge_entries);
+    size_t released_public_scales=0;
+#if defined(MICIUS_I22_RELEASE_LOADER_SCALES)
+    micius::i22::ReleaseStats released;
+    if(!micius::i22::ReleasePublicScales(ctx->managed_buffers,bridge_entries,released))
+        throw std::runtime_error("I22 loader ownership contract failed");
+    released_public_scales=released.bytes;
+#endif
+    size_t retired_weights=0;
+    if(!micius::i25::ReleaseWeights(ctx->managed_buffers,bridge_entries,
+        micius::i25::RetirableWeights(ctx->engine_ctx),retired_weights))
+        throw std::runtime_error("I25 weight retirement ownership mismatch");
+    I22Ledger("bound_after_cleanup",ctx,bridge_entries,released_public_scales);
 
     size_t last_dot = file_name.find_last_of('.');
     std::string model_name = (last_dot == std::string::npos) ? file_name : file_name.substr(0, last_dot);

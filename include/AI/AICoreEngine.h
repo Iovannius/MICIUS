@@ -5,6 +5,8 @@
 #include "AIDataFront.h"
 #include "AIComputKrnl.h"
 #include "PreparedGEMVWeights.h"
+#include "AI/I25Binding.h"
+namespace micius::i25 { struct Panels; }
 
 #include "SchedulerCore.h"
 #include "HardwareTopology.h"
@@ -182,6 +184,7 @@ private:
         size_t count = 0;
     };
 
+    std::unique_ptr<micius::i25::Panels> i25_panels;
     MiciusConfig config;
     std::vector<MiciusLayerWeights> model_layers;
     std::vector<OwnedScaleBuffer> owned_scale_buffers;
@@ -255,6 +258,9 @@ private:
     // One per-context activation snapshot, allocated only by the prepared-F64
     // experiment. Member layout stays the same across internal feature flags.
     AlignedArray<double> reference_gemv_input;
+    // I1 activation snapshot only; no expanded weight shadow.
+    AlignedArray<int8_t> i1_input;
+    AlignedArray<double> i1_scales;
     uint32_t reference_seq_len = 0;
     uint32_t reference_kv_dim = 0;
     uint32_t reference_qkv_dim = 0;
@@ -300,6 +306,8 @@ private:
     
 public:
 
+    micius::i25::Stats I25Stats() const noexcept;
+    std::span<const micius::i25::RetiredWeight> I25Retired() const noexcept;
     int recommended_shadow_core = -1; //暴露的影子线程绑核建议
 
     //宏观的负载探针

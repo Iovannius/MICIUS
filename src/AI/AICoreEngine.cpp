@@ -1,6 +1,41 @@
 #include "AICoreEngine.h"
+#include "i25/ModelPanels.h"
+#if defined(MICIUS_I19_SCORE_GROUP3)
+#include "I19AttentionScore.h"
+#endif
+#if defined(MICIUS_I17_SCORE_REUSE)
+#include "I17AttentionScore.h"
+#endif
+#if defined(MICIUS_I11_SCORE64)
+#include "I11AttentionScore.h"
+#endif
+#if defined(MICIUS_I15_VALUE_TILE32)
+#include "I15AttentionValue.h"
+#endif
+#if defined(MICIUS_I10_VALUE64)
+#include "I10AttentionValue.h"
+#endif
 #include "AIComputKrnlInternal.h"
 #include "PreparedGEMVInput.h"
+#if MICIUS_I4_MODE
+#include "I4MixedPrecision.h"
+#if MICIUS_I1_MODE != 2 || defined(MICIUS_I2_DIAGNOSTICS) || defined(MICIUS_I3_INTERVENTION)
+#error "I4 mixed precision requires I1 AVX2 without I2/I3 instrumentation"
+#endif
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+#include "I3Intervention.h"
+#if MICIUS_I1_MODE != 2 || defined(MICIUS_I2_DIAGNOSTICS)
+#error "I3 requires I1 AVX2 and I2 diagnostics OFF"
+#endif
+#endif
+#if defined(MICIUS_I2_DIAGNOSTICS)
+#include "I2Diagnostic.h"
+#endif
+#include "PreparedW8A8Input.h"
+#ifndef MICIUS_I1_MODE
+#define MICIUS_I1_MODE 0
+#endif
 #include "DecodeProfile.h"
 #include <chrono>
 #ifndef MICIUS_PW2_MODE
@@ -88,7 +123,7 @@ private:
     std::vector<MiciusLayerWeights>& layers_;
 };
 
-ReferenceMathStatus ReferenceGEMV(
+[[maybe_unused]] ReferenceMathStatus ReferenceGEMV(
     const int8_t* weights,
     const QuantDescriptor* scales,
     const float* compact_scales,
@@ -476,7 +511,18 @@ AIEngineFront::AIEngineFront(const MiciusConfig& cfg)
             reference_gate = MakeAlignedArray<float>(config.intermediate_dim);
             reference_up = MakeAlignedArray<float>(config.intermediate_dim);
             reference_logits = MakeAlignedArray<float>(config.vocab_size);
+#if defined(MICIUS_I19_SCORE_GROUP3)
+            const size_t i19_copies = config.head_dim==64 && config.num_heads/config.num_kv_heads==3 &&
+                config.max_seq_len>=128 && config.max_seq_len<=8192 ? 4U : 1U;
+            reference_scores = MakeAlignedArray<float>(checked_product(config.max_seq_len,i19_copies));
+#else
             reference_scores = MakeAlignedArray<float>(config.max_seq_len);
+#endif
+#if MICIUS_I1_MODE
+            const auto i1_capacity=std::max(hidden_dim,config.intermediate_dim);
+            i1_input=MakeAlignedArray<int8_t>(i1_capacity);
+            i1_scales=MakeAlignedArray<double>((static_cast<size_t>(i1_capacity)+31U)/32U);
+#endif
 #if defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
             reference_gemv_input = MakeAlignedArray<double>(
                 std::max(hidden_dim, config.intermediate_dim));
@@ -861,6 +907,39 @@ bool AIEngineFront::BindValidatedTensors(
         std::chrono::steady_clock::now() - weight_prepare_begin).count();
 #endif
 
+    std::unique_ptr<micius::i25::Panels> candidate_panels;
+#if defined(MICIUS_I25_PANEL_GEMV)
+    // Full-model shape decision is made before any ownership transition.
+    // Vocab tails retain the complete I22 path; there is no mixed partial bind.
+    if(config.vocab_size%4U==0 && total_qkv_dim%4U==0) {
+        candidate_panels=std::make_unique<micius::i25::Panels>();
+        auto& p=*candidate_panels;
+        p.matrices.reserve(size_t(config.num_layers)*5U+1U);
+        p.retired.reserve(size_t(config.num_layers)*7U+1U);
+        p.scratch.resize(size_t(std::max(hidden_dim,config.intermediate_dim))*4U);
+        p.stats.scratch_bytes=p.scratch.size();
+        for(uint32_t i=0;i<config.num_layers;++i) {
+            const auto& layer=candidate_layers[i];
+            p.Pack(layer.qkv_packed_weights,layer.qkv_packed_scales,total_qkv_dim,hidden_dim);
+            p.Pack(layer.o_weight,layer.o_scales,hidden_dim,hidden_dim);
+            p.Pack(layer.gate_weight,layer.gate_scales,config.intermediate_dim,hidden_dim);
+            p.Pack(layer.up_weight,layer.up_scales,config.intermediate_dim,hidden_dim);
+            p.Pack(layer.down_weight,layer.down_scales,hidden_dim,config.intermediate_dim);
+            const std::string prefix="blk."+std::to_string(i)+".";
+            p.Retire(dict.at(prefix+"attn_q.weight"),size_t(hidden_dim)*hidden_dim);
+            p.Retire(dict.at(prefix+"attn_k.weight"),size_t(kv_dim)*hidden_dim);
+            p.Retire(dict.at(prefix+"attn_v.weight"),size_t(kv_dim)*hidden_dim);
+            p.Retire(layer.o_weight,size_t(hidden_dim)*hidden_dim);
+            p.Retire(layer.gate_weight,size_t(config.intermediate_dim)*hidden_dim);
+            p.Retire(layer.up_weight,size_t(config.intermediate_dim)*hidden_dim);
+            p.Retire(layer.down_weight,size_t(hidden_dim)*config.intermediate_dim);
+        }
+        p.Pack(w_out,s_out,config.vocab_size,hidden_dim);
+        p.Retire(w_out,size_t(config.vocab_size)*hidden_dim);
+        p.stats.active=true;
+    }
+#endif
+
     const float* old_norm = norm_weight_final;
     const float* old_embedding = token_embd_weight;
     const int8_t* old_output_weights = engine_quant_weights;
@@ -870,6 +949,7 @@ bool AIEngineFront::BindValidatedTensors(
     const bool old_scales_prevalidated = reference_scales_prevalidated;
 
     model_layers.swap(candidate_layers);
+    i25_panels.swap(candidate_panels);
     norm_weight_final = candidate_norm;
     token_embd_weight = candidate_embedding;
     engine_quant_weights = w_out;
@@ -884,6 +964,7 @@ bool AIEngineFront::BindValidatedTensors(
     reference_scales_prevalidated = true;
     if (!ResetState()) {
         model_layers.swap(candidate_layers);
+        i25_panels.swap(candidate_panels);
         norm_weight_final = old_norm;
         token_embd_weight = old_embedding;
         engine_quant_weights = old_output_weights;
@@ -896,7 +977,18 @@ bool AIEngineFront::BindValidatedTensors(
 
     // candidate_layers now holds the previous model's owned packed QKV data;
     // candidate_guard releases it on every exit path.
-    owned_scale_buffers = std::move(scale_buffers);
+    if(i25_panels) {
+        // No old-consumer pointer remains reachable after this commit. Both
+        // scale copies and the staging row-major QKV copy can now disappear.
+        FreePackedLayerStorage(model_layers);
+        for(auto& l:model_layers) {
+            l.o_weight=l.gate_weight=l.up_weight=l.down_weight=nullptr;
+            l.o_scales=l.gate_scales=l.up_scales=l.down_scales=nullptr;
+            l.o_compact_scales=l.gate_compact_scales=l.up_compact_scales=l.down_compact_scales=nullptr;
+        }
+        engine_quant_weights=nullptr;engine_scales=nullptr;engine_compact_scales=nullptr;
+        scale_buffers.clear();owned_scale_buffers.clear();
+    } else owned_scale_buffers = std::move(scale_buffers);
     reference_prepared_weights.swap(candidate_prepared_weights);
     reference_weight_stats = candidate_weight_stats;
     return true;
@@ -1306,8 +1398,8 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
     if (speculative_enabled || !model_bound ||
         model_layers.size() != config.num_layers ||
         !token_embd_weight || !norm_weight_final ||
-        !engine_quant_weights ||
-        !HasReferenceScales(engine_scales, engine_compact_scales)) {
+        (!i25_panels && (!engine_quant_weights ||
+        !HasReferenceScales(engine_scales, engine_compact_scales)))) {
         return ReferenceStepResult::MODEL_NOT_BOUND;
     }
     if (token >= config.vocab_size) return ReferenceStepResult::INVALID_MODEL_DATA;
@@ -1334,15 +1426,101 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
 
     // Invocation-local views cannot survive this synchronous call. A future
     // row executor must join/drain all consumers before returning or reset.
+#if MICIUS_I4_MODE
+    uint32_t i4_layer=0;
+    auto i4_op=micius::i4::Op::QKV;
+#endif
+#if defined(MICIUS_I2_DIAGNOSTICS)
+    micius::i2::Session i2(token, reference_seq_len, MICIUS_I1_MODE);
+    if (!i2.good()) return ReferenceStepResult::INVALID_MODEL_DATA;
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+    micius::i3::Session i3(token, reference_seq_len, config.num_layers);
+    if (!i3.good()) return ReferenceStepResult::INVALID_MODEL_DATA;
+#endif
+#if MICIUS_I1_MODE
+    if (!i1_input || !i1_scales) return ReferenceStepResult::INVALID_MODEL_DATA;
+#if defined(MICIUS_I25_PANEL_GEMV)
+    micius::i23::Expanded expanded;
+    const micius::i23::Matrix* panel=nullptr;
+#endif
+    const auto prepare_i1 = [&](const float* x,uint32_t n,micius::internal::PreparedW8A8Input& view) {
+        const size_t cap=std::max(hidden_dim,config.intermediate_dim);
+        auto status=micius::internal::PrepareW8A8Input({x,n},{i1_input.get(),cap},
+            {i1_scales.get(),(cap+31U)/32U},view);
+#if defined(MICIUS_I25_PANEL_GEMV)
+        if(status==Q8_32_GEMVStatus::OK && i25_panels)
+            status=micius::i23::Expand(view,i25_panels->scratch,expanded);
+#endif
+        return status;
+    };
+    const auto gemv = [&](const int8_t* w,const QuantDescriptor* s,const float*,
+        const float* x,float* y,uint32_t cols,uint32_t rows,bool validated,
+        const micius::internal::PreparedW8A8Input* supplied=nullptr,
+        const micius::internal::PreparedF32GEMVWeights* =nullptr) {
+#if defined(MICIUS_I2_DIAGNOSTICS)
+        const auto snapshot = i2.capture(x, cols, rows);
+        if (!i2.good()) return ReferenceMathStatus::INVALID_MODEL;
+#endif
+        micius::internal::PreparedW8A8Input local;
+        auto status=Q8_32_GEMVStatus::OK;
+#if MICIUS_I4_MODE
+        if (micius::i4::Select(micius::i4::CompiledPolicy(),i4_layer,i4_op)) {
+            if (!micius::i4::RecordSelected(i4_layer,i4_op)) return ReferenceMathStatus::INVALID_MODEL;
+            status=micius::i4::F64(w,s,x,y,cols,rows,validated);
+        } else
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+        if (!i3.begin(x,cols,rows)) return ReferenceMathStatus::INVALID_MODEL;
+        if (i3.selected()) {
+            status=micius::i3::F64(w,s,x,y,cols,rows,validated);
+        } else
+#endif
+        {
+        if (!supplied) { status=prepare_i1(x,cols,local);supplied=&local; }
+        if (status==Q8_32_GEMVStatus::OK && supplied->size()!=cols)
+            status=Q8_32_GEMVStatus::INVALID_ARGUMENT;
+        if (status==Q8_32_GEMVStatus::OK) {
+#if defined(MICIUS_I25_PANEL_GEMV)
+            if(i25_panels) {
+                if(!panel || panel->cols()!=cols || panel->rows()!=rows)
+                    return ReferenceMathStatus::INVALID_MODEL;
+                status=micius::i23::Consume(*panel,expanded,{y,rows});
+            } else
+#endif
+            status=micius::internal::GEMV_W8A8Rows(w,s,*supplied,y,rows,0,rows,validated,MICIUS_I1_MODE==1);
+        }
+        }
+#if defined(MICIUS_I3_INTERVENTION)
+        if (status==Q8_32_GEMVStatus::OK && !i3.end(x,y)) return ReferenceMathStatus::INVALID_MODEL;
+#endif
+#if defined(MICIUS_I2_DIAGNOSTICS)
+        if (status==Q8_32_GEMVStatus::OK && !i2.finish(snapshot,w,s,x,y,rows,supplied))
+            return ReferenceMathStatus::INVALID_MODEL;
+#endif
+        return status==Q8_32_GEMVStatus::OK ? ReferenceMathStatus::OK :
+            status==Q8_32_GEMVStatus::NUMERIC_ERROR ? ReferenceMathStatus::NUMERIC_ERROR : ReferenceMathStatus::INVALID_MODEL;
+    };
+#else
     const auto gemv = [&](const int8_t* w, const QuantDescriptor* scales,
                           const float* compact, const float* x, float* y,
                           uint32_t cols, uint32_t rows, bool validated,
                           const micius::internal::PreparedF64GEMVInput* prepared = nullptr,
                           const micius::internal::PreparedF32GEMVWeights* prepared_weights = nullptr) {
-        return ReferenceGEMV(w, scales, compact, x, y, cols, rows, validated,
+#if defined(MICIUS_I2_DIAGNOSTICS)
+        const auto snapshot = i2.capture(x, cols, rows);
+        if (!i2.good()) return ReferenceMathStatus::INVALID_MODEL;
+#endif
+        const auto status = ReferenceGEMV(w, scales, compact, x, y, cols, rows, validated,
                              reference_gemv_input.get(),
                              std::max(hidden_dim, config.intermediate_dim), prepared, prepared_weights);
+#if defined(MICIUS_I2_DIAGNOSTICS)
+        if (status==ReferenceMathStatus::OK && !i2.finish(snapshot,w,scales,x,y,rows))
+            return ReferenceMathStatus::INVALID_MODEL;
+#endif
+        return status;
     };
+#endif
 
     const uint32_t position = reference_seq_len;
     const uint32_t q_dim = hidden_dim;
@@ -1355,10 +1533,16 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
         if (!std::isfinite(embedding[i])) return ReferenceStepResult::NUMERIC_ERROR;
         reference_residual[i] = embedding[i];
     }
+#if defined(MICIUS_I2_DIAGNOSTICS)
+    if (!i2.boundary(-1,"embedding",reference_residual.get(),hidden_dim)) return ReferenceStepResult::INVALID_MODEL_DATA;
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+    if (!i3.boundary(-1,"embedding",reference_residual.get(),hidden_dim)) return ReferenceStepResult::INVALID_MODEL_DATA;
+#endif
 
     for (uint32_t layer_index = 0; layer_index < config.num_layers; ++layer_index) {
         const MiciusLayerWeights& layer = model_layers[layer_index];
-        if (!layer.qkv_packed_weights ||
+        if ((!i25_panels && (!layer.qkv_packed_weights ||
             !HasReferenceScales(
                 layer.qkv_packed_scales, layer.qkv_packed_compact_scales) ||
             !layer.o_weight ||
@@ -1368,7 +1552,7 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
             !layer.up_weight ||
             !HasReferenceScales(layer.up_scales, layer.up_compact_scales) ||
             !layer.down_weight ||
-            !HasReferenceScales(layer.down_scales, layer.down_compact_scales) ||
+            !HasReferenceScales(layer.down_scales, layer.down_compact_scales))) ||
             !layer.rms_attn_weight || !layer.rms_ffn_weight) {
             return ReferenceStepResult::INVALID_MODEL_DATA;
         }
@@ -1382,6 +1566,18 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
 
         MICIUS_D1_TAG(QKV);
+#if MICIUS_I4_MODE
+        i4_layer=layer_index;i4_op=micius::i4::Op::QKV;
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+        i3.set(layer_index,micius::i3::Op::QKV);
+#endif
+#if defined(MICIUS_I2_DIAGNOSTICS)
+        i2.set(static_cast<int>(layer_index), "qkv");
+#endif
+#if defined(MICIUS_I25_PANEL_GEMV)
+        panel=i25_panels ? &i25_panels->matrices[size_t(layer_index)*5U+0U] : nullptr;
+#endif
         math_status = gemv(
             layer.qkv_packed_weights,
             layer.qkv_packed_scales,
@@ -1404,6 +1600,10 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
         math_status = ReferenceApplyRoPE(key, rope_cache, position, config.num_kv_heads);
         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
+#if defined(MICIUS_I2_DIAGNOSTICS)
+        if (!i2.boundary(static_cast<int>(layer_index),"qkv.rope",reference_qkv.get(),reference_qkv_dim))
+            return ReferenceStepResult::INVALID_MODEL_DATA;
+#endif
 
         const size_t current_kv_offset =
             (static_cast<size_t>(layer_index) * config.max_seq_len + position) * kv_dim;
@@ -1411,11 +1611,47 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
         std::copy_n(value, kv_dim, reference_v_cache.get() + current_kv_offset);
 
         const uint32_t group_size = config.num_heads / config.num_kv_heads;
+#if defined(MICIUS_I19_SCORE_GROUP3)
+        bool i19_ready=false;double i19_maxima[3];
+        const bool i19_eligible=group_size==3 && config.head_dim==64 &&
+            config.max_seq_len<=8192 && position+1U>=128;
+#endif
         for (uint32_t query_head = 0; query_head < config.num_heads; ++query_head) {
             const uint32_t kv_head = query_head / group_size;
             const float* query_values = query + static_cast<size_t>(query_head) * config.head_dim;
             double maximum_score = -std::numeric_limits<double>::infinity();
 
+#if defined(MICIUS_I11_SCORE64)
+            const size_t i11_key_offset =
+                static_cast<size_t>(layer_index) * config.max_seq_len * kv_dim +
+                static_cast<size_t>(kv_head) * config.head_dim;
+#if defined(MICIUS_I19_SCORE_GROUP3)
+            if(i19_eligible && query_head%3U==0) {
+                i19_ready=TryPrepareAttentionScoresI19(query_values,
+                    reference_k_cache.get()+i11_key_offset,kv_dim,
+                    reference_scores.get()+config.max_seq_len,config.max_seq_len,
+                    i19_maxima,position+1U,config.head_dim,group_size,attention_score_denominator);
+            }
+            I11ScoreStatus i11_score_status;
+            if(i19_eligible && i19_ready) {
+                std::copy_n(reference_scores.get()+size_t(1U+query_head%3U)*config.max_seq_len,
+                    position+1U,reference_scores.get());
+                maximum_score=i19_maxima[query_head%3U];
+                i11_score_status=I11ScoreStatus::OK;
+            } else i11_score_status=ComputeAttentionScoresI17(
+#elif defined(MICIUS_I17_SCORE_REUSE)
+            const auto i11_score_status = ComputeAttentionScoresI17(
+#else
+            const auto i11_score_status = ComputeAttentionScoresI11(
+#endif
+                query_values, reference_k_cache.get() + i11_key_offset, kv_dim,
+                reference_scores.get(), position + 1U, config.head_dim,
+                attention_score_denominator, &maximum_score);
+            if (i11_score_status == I11ScoreStatus::NUMERIC_ERROR)
+                return ReferenceStepResult::NUMERIC_ERROR;
+            if (i11_score_status == I11ScoreStatus::UNSUPPORTED)
+#endif
+            {
 #if defined(MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD)
             uint32_t quad_time = 0U;
             if (position >= kAttentionScoreTimeQuadWidth - 1U) {
@@ -1518,6 +1754,8 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
             }
 #endif
 
+            } // existing Score route when I11 is disabled or unsupported
+
             double probability_sum = 0.0;
             for (uint32_t time = 0; time <= position; ++time) {
                 const double probability =
@@ -1536,7 +1774,13 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
             const size_t first_value_offset =
                 static_cast<size_t>(layer_index) * config.max_seq_len * kv_dim +
                 static_cast<size_t>(kv_head) * config.head_dim;
+#if defined(MICIUS_I15_VALUE_TILE32)
+            switch (AccumulateAttentionValuesI15(
+#elif defined(MICIUS_I10_VALUE64)
+            switch (AccumulateAttentionValuesI10(
+#else
             switch (AccumulateAttentionValuesF32_AVX2(
+#endif
                 reference_scores.get(),
                 probability_sum,
                 reference_v_cache.get() + first_value_offset,
@@ -1574,6 +1818,18 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
         }
 
         MICIUS_D1_TAG(O);
+#if MICIUS_I4_MODE
+        i4_op=micius::i4::Op::O;
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+        i3.set(layer_index,micius::i3::Op::O);
+#endif
+#if defined(MICIUS_I2_DIAGNOSTICS)
+        i2.set(static_cast<int>(layer_index), "o");
+#endif
+#if defined(MICIUS_I25_PANEL_GEMV)
+        panel=i25_panels ? &i25_panels->matrices[size_t(layer_index)*5U+1U] : nullptr;
+#endif
         math_status = gemv(
             layer.o_weight,
             layer.o_scales,
@@ -1607,7 +1863,16 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
             config.rms_norm_epsilon);
         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
         {
-#if defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
+#if MICIUS_I1_MODE
+#if defined(MICIUS_I3_INTERVENTION)
+        if (!i3.boundary(static_cast<int>(layer_index),"attention_residual",reference_residual.get(),hidden_dim) ||
+            !i3.start_ffn(layer_index,reference_normed.get(),hidden_dim)) return ReferenceStepResult::INVALID_MODEL_DATA;
+#endif
+        micius::internal::PreparedW8A8Input ffn_prepared;
+        const auto i1_status=prepare_i1(reference_normed.get(),hidden_dim,ffn_prepared);
+        if (i1_status!=Q8_32_GEMVStatus::OK)
+            return i1_status==Q8_32_GEMVStatus::NUMERIC_ERROR ? ReferenceStepResult::NUMERIC_ERROR : ReferenceStepResult::INVALID_MODEL_DATA;
+#elif defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
         micius::internal::PreparedF64GEMVInput ffn_prepared;
         const auto preparation_status = [&]() {
             MICIUS_D1_SCOPE(micius::d1::Part::PrepFFN);
@@ -1621,6 +1886,20 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
                 ? ReferenceStepResult::NUMERIC_ERROR : ReferenceStepResult::INVALID_MODEL_DATA;
 #endif
         MICIUS_D1_TAG(Gate);
+#if MICIUS_I4_MODE
+        i4_op=micius::i4::Op::Gate;
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+        i3.set(layer_index,micius::i3::Op::Gate);
+#endif
+#if defined(MICIUS_I2_DIAGNOSTICS)
+        if (!i2.boundary(static_cast<int>(layer_index),"attention_residual",reference_residual.get(),hidden_dim))
+            return ReferenceStepResult::INVALID_MODEL_DATA;
+        i2.set(static_cast<int>(layer_index), "gate");
+#endif
+#if defined(MICIUS_I25_PANEL_GEMV)
+        panel=i25_panels ? &i25_panels->matrices[size_t(layer_index)*5U+2U] : nullptr;
+#endif
         math_status = gemv(
             layer.gate_weight,
             layer.gate_scales,
@@ -1630,12 +1909,24 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
             hidden_dim,
             config.intermediate_dim,
             reference_scales_prevalidated
-#if defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
+#if defined(MICIUS_REFERENCE_GEMV_PREPARED_F64) || MICIUS_I1_MODE
             , &ffn_prepared
 #endif
             );
         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
         MICIUS_D1_TAG(Up);
+#if MICIUS_I4_MODE
+        i4_op=micius::i4::Op::Up;
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+        i3.set(layer_index,micius::i3::Op::Up);
+#endif
+#if defined(MICIUS_I2_DIAGNOSTICS)
+        i2.set(static_cast<int>(layer_index), "up");
+#endif
+#if defined(MICIUS_I25_PANEL_GEMV)
+        panel=i25_panels ? &i25_panels->matrices[size_t(layer_index)*5U+3U] : nullptr;
+#endif
         math_status = gemv(
             layer.up_weight,
             layer.up_scales,
@@ -1645,12 +1936,15 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
             hidden_dim,
             config.intermediate_dim,
             reference_scales_prevalidated
-#if defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
+#if defined(MICIUS_REFERENCE_GEMV_PREPARED_F64) || MICIUS_I1_MODE
             , &ffn_prepared
 #endif
             );
         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
 
+#if defined(MICIUS_I3_INTERVENTION)
+        if (!i3.end_ffn(reference_normed.get(),hidden_dim)) return ReferenceStepResult::INVALID_MODEL_DATA;
+#endif
         } // both FFN consumers finished; the prepared view expires here
 
         for (uint32_t i = 0; i < config.intermediate_dim; ++i) {
@@ -1666,6 +1960,18 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
         }
 
         MICIUS_D1_TAG(Down);
+#if MICIUS_I4_MODE
+        i4_op=micius::i4::Op::Down;
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+        i3.set(layer_index,micius::i3::Op::Down);
+#endif
+#if defined(MICIUS_I2_DIAGNOSTICS)
+        i2.set(static_cast<int>(layer_index), "down");
+#endif
+#if defined(MICIUS_I25_PANEL_GEMV)
+        panel=i25_panels ? &i25_panels->matrices[size_t(layer_index)*5U+4U] : nullptr;
+#endif
         math_status = gemv(
             layer.down_weight,
             layer.down_scales,
@@ -1686,6 +1992,14 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
             }
             reference_residual[i] = static_cast<float>(value_sum);
         }
+#if defined(MICIUS_I2_DIAGNOSTICS)
+        if (!i2.boundary(static_cast<int>(layer_index),"layer_output",reference_residual.get(),hidden_dim))
+            return ReferenceStepResult::INVALID_MODEL_DATA;
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+        if (!i3.boundary(static_cast<int>(layer_index),"layer_output",reference_residual.get(),hidden_dim))
+            return ReferenceStepResult::INVALID_MODEL_DATA;
+#endif
     }
 
     ReferenceMathStatus math_status = ReferenceRMSNorm(
@@ -1696,6 +2010,18 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
         config.rms_norm_epsilon);
     if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
     MICIUS_D1_TAG(LM);
+#if MICIUS_I4_MODE
+    i4_layer=config.num_layers;i4_op=micius::i4::Op::LM;
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+    i3.set(config.num_layers,micius::i3::Op::LM);
+#endif
+#if defined(MICIUS_I2_DIAGNOSTICS)
+    i2.set(static_cast<int>(config.num_layers), "lm");
+#endif
+#if defined(MICIUS_I25_PANEL_GEMV)
+    panel=i25_panels ? &i25_panels->matrices.back() : nullptr;
+#endif
     math_status = gemv(
         engine_quant_weights,
         engine_scales,
@@ -1718,6 +2044,12 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
         }
     }
 
+#if defined(MICIUS_I2_DIAGNOSTICS)
+    if (!i2.complete()) return ReferenceStepResult::INVALID_MODEL_DATA;
+#endif
+#if defined(MICIUS_I3_INTERVENTION)
+    if (!i3.complete()) return ReferenceStepResult::INVALID_MODEL_DATA;
+#endif
     ++reference_seq_len;
     reference_has_logits = true;
     if (out_token) *out_token = best_token;
@@ -2058,4 +2390,20 @@ PumpResult AIEngineFront::PumpPipeline(uint32_t external_input_token, const floa
 
     tree_reject_count.fetch_add(1, std::memory_order_relaxed);
     return PumpResult::TREE_REJECTED;
+}
+
+micius::i25::Stats AIEngineFront::I25Stats() const noexcept {
+    if(!i25_panels)return {};
+    auto s=i25_panels->stats;s.legacy_scale_buffers=owned_scale_buffers.size();
+    s.legacy_consumer_pointers=bool(engine_quant_weights)+bool(engine_scales)+bool(engine_compact_scales);
+    for(const auto& l:model_layers)s.legacy_consumer_pointers+=
+        bool(l.qkv_packed_weights)+bool(l.qkv_packed_scales)+bool(l.qkv_packed_compact_scales)+
+        bool(l.o_weight)+bool(l.o_scales)+bool(l.o_compact_scales)+
+        bool(l.gate_weight)+bool(l.gate_scales)+bool(l.gate_compact_scales)+
+        bool(l.up_weight)+bool(l.up_scales)+bool(l.up_compact_scales)+
+        bool(l.down_weight)+bool(l.down_scales)+bool(l.down_compact_scales);
+    return s;
+}
+std::span<const micius::i25::RetiredWeight> AIEngineFront::I25Retired() const noexcept {
+    return i25_panels ? std::span<const micius::i25::RetiredWeight>(i25_panels->retired) : std::span<const micius::i25::RetiredWeight>{};
 }

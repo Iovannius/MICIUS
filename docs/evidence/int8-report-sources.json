@@ -1,0 +1,912 @@
+{
+  "scope": "Technical reports, final analyses, independent checks, delivery reviews and protocol material. Duplicate historical package copies are represented by their canonical source.",
+  "stages": {
+    "I1": {
+      "title": "W8A8 的算术契约",
+      "disposition": "建立近似参考",
+      "published": "history/int8/I01.md",
+      "sources": [
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I1_CONTRACT.md",
+          "original_sha256": "ac05f30d51d86f6ef5f2f5cf84681c32a8c3d33f7d5d69765d8f64b111e244bb",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I1_VALIDATION.md",
+          "original_sha256": "0d9c2890593c6c40190ab7a03e255b6b886025eb3151cad5b9d4991a7cba3dc1",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "首轮目标机测量",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/context/MICIUS-INT8-MAINLINE-RESTART-PROMPT-2026-10-04.md",
+          "original_sha256": "19f8c4d34b57f5b4da5d559a4c6be2b7304d3a846d856ff795941ec34131ecc3",
+          "representation": "edited technical text"
+        }
+      ]
+    },
+    "I2": {
+      "title": "同输入数值归因与 R1 修订",
+      "disposition": "定位误差",
+      "published": "history/int8/I02.md",
+      "sources": [
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I2_AUDIT_CHECK_2026-10-11.md",
+          "original_sha256": "3f4de716b988e1d228cb9dcf30082bdc6aec5ae2e019e8a5c07949a49a1ac30d",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I2_DIAGNOSTICS.md",
+          "original_sha256": "bc4835e3ee8e1bb93e4623aa96ef72a1dc99e4cf72d3d4c97a32e55384de62ee",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I2_RESULTS_2026-10-10.md",
+          "original_sha256": "ee3e556389f742ec8653807fa18465e062d7e01625a1c584c5f8a3ea2f14e697",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "检查点",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/I2-CHECKPOINT.md",
+          "original_sha256": "523d465302ad3ca301ef2ab0611dbc5ea368fb866f38ae9b09c479352f84641d",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I3": {
+      "title": "两层 FFN 的精度干预",
+      "disposition": "保留 W8A8 主策略",
+      "published": "history/int8/I03.md",
+      "sources": [
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I3_INTERVENTIONS.md",
+          "original_sha256": "0a0d0af8cf691000766d16c8d6b054b2ac26557cb2a4d4c2c5eb7f5af14528d5",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I3_RESULTS_2026-10-11.md",
+          "original_sha256": "8fb6a359beab223492779dc0b3a82ffce2d5693238378e716e088e8583e0d780",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "检查点",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/I3-CHECKPOINT.md",
+          "original_sha256": "091394b5b77745733849f72efcbc95410f5d1a75cb37067862b2f0f2db0e155e",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I4": {
+      "title": "固定自然文本评估",
+      "disposition": "通过固定子集筛选",
+      "published": "history/int8/I04.md",
+      "sources": [
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I4_IMPLEMENTATION.md",
+          "original_sha256": "38918988474d103da09624e89531fba35bb23ad3613fcd52741e9548ab2bbd95",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I4_RESULTS_2026-10-11.md",
+          "original_sha256": "bca7b9c468de2c03624ab0a0124415586079847797a5de43a8540f91e112bf7c",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "独立收尾复核",
+          "source": "audit-i4-closeout-2026-10-11/I4-CLOSEOUT-AUDIT.md",
+          "original_sha256": "8f0771659e9351f4e38e31b095bd7182a2387551f5ce4d982e1159f0b7e7428f",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "独立收尾复核",
+          "source": "audit-i4-closeout-2026-10-11-r1/I4-CLOSEOUT-AUDIT.md",
+          "original_sha256": "62c719c2f2c16224bf065e8691ad6f7290d7805acfd50ae1cd6f1fe657769941",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "检查点",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/I4-CHECKPOINT.md",
+          "original_sha256": "6980ea39ab82ad8eb2790598ad3f6ea407cd44cc842f42f50474ef5a5c60ec4e",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I5": {
+      "title": "扩展语料与长上下文",
+      "disposition": "通过固定范围质量筛选",
+      "published": "history/int8/I05.md",
+      "sources": [
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I5_IMPLEMENTATION.md",
+          "original_sha256": "7da0d9297e92804e2337547655c0046ddcf64e0f0f3b6a6c1a19253d05fffe9d",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I5_RESULTS_2026-10-12.md",
+          "original_sha256": "33dc2b8a7c3f0044b5904be85cd6dc9afece8317c4edc60e325db43b745545ff",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "检查点",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/I5-CHECKPOINT.md",
+          "original_sha256": "2b2efabcef9d397a83d8895d54dfcfaf04c89cd2a44ff3e4a4dadf1983b9e544",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I6": {
+      "title": "工程准入与连续补证",
+      "disposition": "I6 不确定，I6-R1 通过",
+      "published": "history/int8/I06.md",
+      "sources": [
+        {
+          "kind": "早期研究报告",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/INT8_I6_RESULTS_2026-10-13.md",
+          "original_sha256": "bcea1fdc3ef1ca1bbbd58a424a508c4385b361cd59f5d31fd952950a981f2a97",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "独立收尾复核",
+          "source": "audit-i6-final-2026-10-13/FINAL-REVIEW.md",
+          "original_sha256": "56f38911e4318e9e67dde4cc361afd515583f7c2ee85fb6b8ff51b00e4e319ba",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "连续计时补证",
+          "source": "MICIUS-INT8-I6-R1/I6-R1-RESULTS.md",
+          "original_sha256": "6565e56bb01912eddc476ff3ddf39dfd24f06af319ddb7e88258888ac37f71ea",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/MICIUS-v0.6-F64-CURRENT-STATUS-2026-10-13.md",
+          "original_sha256": "e41bf6012ce91ca51311d706a4da3e1425f165f2a722fdd84b29bbf14f87f35a",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/MICIUS-INT8-I6-PROPOSAL-2026-10-12.md",
+          "original_sha256": "7e901a0cf40945b210c02dbca3bd7637efc7d0bf399835236f012346d324710f",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "检查点",
+          "source": "MICIUS-INT8-I25-P1/micius/docs/I6-CHECKPOINT.md",
+          "original_sha256": "a94f2a8f9a8d44b87765a0b175d714285390b07adeb1ec836dcba61da152cf3e",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I7": {
+      "title": "与 llama.cpp 的首次定标",
+      "disposition": "I7-P1 有效对照",
+      "published": "history/int8/I07.md",
+      "sources": [
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I7-VNNI-SCOPE-CHECK-2026-10-14.md",
+          "original_sha256": "4f1a38b7ee432d1055d7d045790ffe1ba7469c517fe6a72e1ba4388ec2b72a8b",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/MICIUS-I7-P1-RESULTS-2026-10-14.md",
+          "original_sha256": "af1927f49c41cb1adb1052cd9b49085c2ec9ce595e8308f5b952fca94316fbf7",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/WORKFLOW-UPDATE-I7-2026-10-14.md",
+          "original_sha256": "d1250550d8cc2a67710ab7907b4a6745a4f28ed27479eb5ed150132b0be6a441",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I8": {
+      "title": "VNNI 开关隔离",
+      "disposition": "确定对手基线",
+      "published": "history/int8/I08.md",
+      "sources": [
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I8-review-20261014-194231-7fff3582/I8-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "fea6c072b886d1eb6883ada9a4e7da75d37348457ad86dd488cf79ed83cf59ef",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I8-review-20261014-194231-7fff3582/RECOMPUTED-RESULTS.md",
+          "original_sha256": "6a214fc43a2279fde0fea732dec751fb3503e089f8610a7639ecdb49149d703b",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I8-CHECKPOINT.md",
+          "original_sha256": "e69e8956d2e47841c2443417a40ccc7213eab1bf1ce4997f2f710447aed14b06",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I9": {
+      "title": "两引擎无 VNNI 剖分",
+      "disposition": "选中 Attention",
+      "published": "history/int8/I09.md",
+      "sources": [
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I9/docs/REFINE-DECISION.md",
+          "original_sha256": "064aa147ca89fd7cb5e227960ac659df17d56f4b30f318a9ffd32a1a838915b5",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I9-DELIVERY-REVIEW-2026-10-15.md",
+          "original_sha256": "ca8452b281065a04e1ae1d754cee48b418c4a4618ae92032525d2c73710d1092",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I9-review-20261015-172556-3065e4b3/I9-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "1d28eed11b7a4cd02e887d33fd784174fe28504140042a4050cfc32ccade7069",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I9-review-20261015-172556-3065e4b3/RECOMPUTED-RESULTS.md",
+          "original_sha256": "31f305a72178f0fbb97c82907686691fb609ec8855ff6f355fa60975d53634c7",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I9-CHECKPOINT.md",
+          "original_sha256": "d0215951a14988a46082c241b065a9d500967a461ee72fd9435b19e127a45671",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I10": {
+      "title": "有序 Attention Value64",
+      "disposition": "采用",
+      "published": "history/int8/I10.md",
+      "sources": [
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I10/docs/IMPLEMENTATION-AND-VALIDATION.md",
+          "original_sha256": "b1f86795857559e1541b1c2734c52ed88a51b3b51042f4e001b04a40f513975d",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I10-review-20261016-114634-12a73b13/I10-REVIEW-2026-10-16.md",
+          "original_sha256": "3a242397f1bff82b5bcb3281dadd4765e22ae2e24fb4765079b84ba2e6de72c6",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I10-review-20261016-114634-12a73b13/RECOMPUTED-RESULTS.md",
+          "original_sha256": "98d28713d81ba1a1ccd2af9f355c914d9a1fa04b50cf88122fb0a32444b0414c",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I10-CHECKPOINT.md",
+          "original_sha256": "398b1216eadce9f2877341f194f83706491652c83bd480ddc7ade5efcab75e58",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I10-NEXT-OBJECTIVE-2026-10-15.md",
+          "original_sha256": "cb19311c6d898c636ba872389185ff876430458024c825154e24f5a6309d3249",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I11": {
+      "title": "有序 Attention Score64",
+      "disposition": "采用",
+      "published": "history/int8/I11.md",
+      "sources": [
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I11/docs/IMPLEMENTATION-AND-VALIDATION.md",
+          "original_sha256": "d523e997b07151da2d04da514cb64fe01acd352889ee6d6f3dc3680ab5052f83",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I11-review-20261016-184533-248eed3f/final-verification/RECOMPUTED-RESULTS.md",
+          "original_sha256": "53df1b3959e19314364c5bbe0b357c266c25ff08e6ce1a303ff4a8074a7a6a7e",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I11-review-20261016-184533-248eed3f/I11-REVIEW-2026-10-16.md",
+          "original_sha256": "6a7208babfb7e5b0a3ae83cd3aec9549733234a969fddeb8fb6327d94f6af319",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I11-review-20261016-184533-248eed3f/RECOMPUTED-RESULTS.md",
+          "original_sha256": "53df1b3959e19314364c5bbe0b357c266c25ff08e6ce1a303ff4a8074a7a6a7e",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I11-CHECKPOINT.md",
+          "original_sha256": "ad42ec02e8eea16bdc94d3f3ec79b40e143aa729f1796cc37357549c181d8ddf",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I12": {
+      "title": "I11 的成本结构",
+      "disposition": "转向 GEMV",
+      "published": "history/int8/I12.md",
+      "sources": [
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I12-review-20261017-161143-816c7e2f/I12-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "328e4ac5af65ba65600cb1d895a42928b17e5c10361382ac0ca618ded7b6da3e",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I12-review-20261017-161143-816c7e2f/RECOMPUTED-RESULTS.md",
+          "original_sha256": "7e77acdc2a2985fed76c1760a55a2d7a0dcbe2cb7c3beca5d00ac2ff87cb3127",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I12-CHECKPOINT.md",
+          "original_sha256": "cc64b5cc44f25d495249aed609bef4d5cd1f6fbbf031030bf82793d23cb42945",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I12-PROPOSAL-2026-10-17.md",
+          "original_sha256": "4e824ffc37eb24becb57f14536593393a5fef3320d42ef12399126b25ecb1da5",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I13": {
+      "title": "四行精确 INT8 GEMV",
+      "disposition": "独立复跑后采用",
+      "published": "history/int8/I13.md",
+      "sources": [
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I13-DELIVERY-REVIEW.zh-CN.md",
+          "original_sha256": "395be1ba2ea0edb002ce3f9569d204f3b6742d432dbfd528f57e44bee7e337f5",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I13-review-20261018-160642-9aa7db04/I13-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "42efc3247c83a63c97678383e2e257c742674e5d2926040b0862e17e1223c776",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I13-review-20261018-160642-9aa7db04/RECOMPUTED-RESULTS.md",
+          "original_sha256": "9e1f2634f6190f374e41c82faa35a0e22f435d341fc2134c70d9a80edce51500",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I13-review-20261018-174336-5cf4f134/I13-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "1a8d01afeef68e64137847f21f9733ea15c1ddb2551ab165d5e29cf622c2ec31",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I13-review-20261018-174336-5cf4f134/RECOMPUTED-RESULTS.md",
+          "original_sha256": "8f6e8a1bc158816e51d300397b9c91527e03ee38d23fbc57dc918a5cf87073e1",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I13-CHECKPOINT.md",
+          "original_sha256": "195799c7645551e54ff806be24192dbe14ec0e2372ac8cfbd663e154567ce50a",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I13-PROPOSAL-2026-10-18.md",
+          "original_sha256": "c576e66046573f7de6fa7a53af17cc1dd2cf2db8a0019d8fc005395564d8574d",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I14": {
+      "title": "I13 的剩余差额",
+      "disposition": "转向 Value",
+      "published": "history/int8/I14.md",
+      "sources": [
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I14-review-20261019-000849-2614798d/I14-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "7ef5d688450c11aeb11a2d85d03898339a0335c1219e3a4434597f8c6a262de1",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I14-review-20261019-000849-2614798d/RECOMPUTED-RESULTS.md",
+          "original_sha256": "9cb2e8ccf59508ba29110a536ce475f67db33a794cea09df4c785d85358b4bef",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I14-CHECKPOINT.md",
+          "original_sha256": "6a4748371789b8d1d69492efb091244c030da9255d22b8be518b07d5245e91d5",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I14-PROPOSAL-2026-10-18.md",
+          "original_sha256": "fb405b7002aa643a6b58dfad8f5b2ada4cec5461a90e84fed8bd1cb8a9d32527",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I15": {
+      "title": "Value 分块",
+      "disposition": "采用",
+      "published": "history/int8/I15.md",
+      "sources": [
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I15/docs/I15-NUMERICAL-CONTRACT.md",
+          "original_sha256": "86f0752e4b0842a970ed0d8326fa545d89c6b6e56cbebacbe9223fe8a1717e86",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I15-DELIVERY-REVIEW.zh-CN.md",
+          "original_sha256": "46bcee07e1917feef3f7aea8c8974b2dc8f0c4797d04213b5f107047a1e92143",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I15-review-20261019-180934-0dee06c8/I15-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "0ff20b68f5cf93645c0c3ee1f314433cbd24301be8a1473192d2b975ae950868",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I15-review-20261019-180934-0dee06c8/RECOMPUTED-RESULTS.md",
+          "original_sha256": "d5f4802c733f8d4045514bdd853d32ecb405c35b3ec1211efd5691f999b11f5d",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I15-CHECKPOINT.md",
+          "original_sha256": "1138bb4558d6fe57f7695480e9936ea531b6164d38e139b75c23c042a0fea294",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I16": {
+      "title": "I15 的长程成本",
+      "disposition": "选中 Score64",
+      "published": "history/int8/I16.md",
+      "sources": [
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I16-DELIVERY-REVIEW.zh-CN.md",
+          "original_sha256": "02c6a8561e36e502ce4aedebb5291c819b53712b607251c5b967344577f42358",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I16-review-20261020-174925-d9a0f893/I16-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "6e3f8c03dc326d54c9d0a5b14495236fb0f92801a9686d9ce9c9a0e992c58f4b",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I16-review-20261020-174925-d9a0f893/RECOMPUTED-RESULTS.md",
+          "original_sha256": "3672756c27945748e8faf94579023c25c53fd0a5c63a6b75e89491dde046d540",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I16-CHECKPOINT.md",
+          "original_sha256": "70475561c587f212107cab34a463a4c0f56a303ab28964c3efcb73aaba9f5929",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I16-PROPOSAL.zh-CN.md",
+          "original_sha256": "1f57b900d946e941e9f75c1b2b9bad8c45f4c253dabc5ff93c6f8bf063226232",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I17": {
+      "title": "查询转换复用",
+      "disposition": "采用",
+      "published": "history/int8/I17.md",
+      "sources": [
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I17/docs/I17-DESIGN.md",
+          "original_sha256": "be2df6551ef5ed49b32ef0769907493b90b70c9f300cf941cf97cb5691e0f263",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I17-DELIVERY-REVIEW.zh-CN.md",
+          "original_sha256": "1ae06e6db8aaaaef83b2ed57331c5b93818ae322e2684ddd391c1d786381b4f5",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I17-review-20261021-172501-04e98710/I17-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "011c4ea2fc4f4ad3739cfea0f3c8c6f9137d2b384694618d7fe18717bfe2f567",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I17-review-20261021-172501-04e98710/RECOMPUTED-RESULTS.md",
+          "original_sha256": "74bb085b857415689efff30021413a9d82667fbdbe69e5005065f1ae5fe53f44",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I17-CHECKPOINT.md",
+          "original_sha256": "587babbcea7cb4434bdca5bcede33b70852484e20d8a300e3bf9c0349c3ff3ec",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I18": {
+      "title": "八行辅助函数内联",
+      "disposition": "局部筛选停止",
+      "published": "history/int8/I18.md",
+      "sources": [
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I18-local-feasibility-2026-10-22/I18-LOCAL-RESULTS.zh-CN.md",
+          "original_sha256": "e345228906e35e1b1391cdeac86933db83b264c5aac0c64b27d293672bf7b7f6",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I18-CHECKPOINT.md",
+          "original_sha256": "16863e3f7a3cb33e9621a522252658f21aa4490af70be45dcf805b697a8b3388",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I18-PROPOSAL-2026-10-21.md",
+          "original_sha256": "a365f48784a9456e2a19a65c71a384d98743aca2d86f54145456b160cb6395bd",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I19": {
+      "title": "三查询头共享 Key",
+      "disposition": "采用",
+      "published": "history/int8/I19.md",
+      "sources": [
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I19/docs/I19-DESIGN.md",
+          "original_sha256": "603f82501e8ff1d8be83133bd2c34412514c506c259a715b45df13418b3d3a83",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I19-delivery-review-2026-10-23/I19-DELIVERY-REVIEW.zh-CN.md",
+          "original_sha256": "ebdf43331a4471c722852df32174ec1fba502fa7e4e1b8f1c3b62ee09501b195",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I19-review-20261023-031031-34df530c/I19-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "e4809b4f51d7b5f49190e1e6bd265d82a5aa9d71402a5ebe28a258899541a97f",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I19-review-20261023-031031-34df530c/RECOMPUTED-RESULTS.md",
+          "original_sha256": "a5b9253aaf5f6c34938f6ecf95aa5174445038c6c69392c0586e564a056baaca",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I19-CHECKPOINT.md",
+          "original_sha256": "ff6090fd7baf207cae32542353c937b3df24c24ba3f1d6df9b601465e1a8f57c",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I19-PROPOSAL-2026-10-22.md",
+          "original_sha256": "9c1574080d9f17211bc2cd677cfc0a6f6938466a6af1f9ca398fee9862f896ee",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I20": {
+      "title": "三查询头共享 Value",
+      "disposition": "局部性能未通过",
+      "published": "history/int8/I20.md",
+      "sources": [
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I20-local-feasibility-2026-10-23/I20-LOCAL-RESULTS.zh-CN.md",
+          "original_sha256": "a2b98c41e824e979273c5ad551a2c25ed1ecbfb9ba66c9405a11f478e0619c49",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I20-PROPOSAL-2026-10-23.md",
+          "original_sha256": "96b7435591dff5ff689c5a8885cbbd3ef92f97699b6135ea17fde7164992c12a",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I21": {
+      "title": "I19 对外同场复测",
+      "disposition": "刷新实测对照",
+      "published": "history/int8/I21.md",
+      "sources": [
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I21-delivery-review-2026-10-25/I21-DELIVERY-REVIEW.zh-CN.md",
+          "original_sha256": "791c8e284f0cf42b94e0ac42a7cd2c7d145721953838adea085da34eb5509516",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I21-review-20261025-003235-1fe75c64/I21-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "b9495f9abf8ff03d061943c4b24a309a64fc57862c01a72c9499ad45228b3ab8",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "算式复核",
+          "source": "reports/I21-review-20261025-003235-1fe75c64/RECOMPUTED-RESULTS.md",
+          "original_sha256": "572c66f9866c4488caf352fd59935a4767d87c1ef685a52eaa2c0c36f7f81e1d",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "研究基线交接",
+          "source": "MICIUS-INT8-I21/docs/I19-DEVELOPMENT-HANDOFF.zh-CN.md",
+          "original_sha256": "9572bc958f4a8a66cd7e70729c973b093b3185c3111fa1a34d0f7e55adb6207a",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I21-CHECKPOINT.md",
+          "original_sha256": "cd5210fe6f9bed782fb7e08bdd675ec685ce2521741de160b6d2fdd6372cd902",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I21-PROPOSAL-2026-10-24.md",
+          "original_sha256": "22a55184161e6bcf7124e1e99f66ea6526a9f11285a990287734d7289d496265",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I22": {
+      "title": "加载器描述符生命周期",
+      "disposition": "采用",
+      "published": "history/int8/I22.md",
+      "sources": [
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I22/docs/MEMORY-OWNERSHIP.zh-CN.md",
+          "original_sha256": "30406ef8d286d9c8a2c8fbf56d0bd76cc94f0e9b1b07381226b77dd9a5eb4cb3",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I22-review-20261026-141956-192d52cd/I22-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "5293a5a700f2da3a7eeca1439eece61deeacc4609d88d89d1305b04f94d3d76a",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I22-PROPOSAL-2026-10-26.md",
+          "original_sha256": "9207b83bf374eae3039c23eed8a6e2a7db904f53359f34878b63d7c9f198d90e",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I23": {
+      "title": "四行面板的完整工作集筛选",
+      "disposition": "通过局部门槛",
+      "published": "history/int8/I23.md",
+      "sources": [
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I23/docs/DESIGN.zh-CN.md",
+          "original_sha256": "3c4eca230a7c691068aeb548cdb545d7b07ac7efbbe23f8342ef98a4c6d89106",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I23/docs/I22-MEMORY-OWNERSHIP.zh-CN.md",
+          "original_sha256": "30406ef8d286d9c8a2c8fbf56d0bd76cc94f0e9b1b07381226b77dd9a5eb4cb3",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I23-BUDGET/docs/BUDGET-PROTOCOL.zh-CN.md",
+          "original_sha256": "84a45a8debb9c3ed1339092ffb693485abfe02658516241c638f1f7bc21cc6ce",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I23-BUDGET/docs/OWNERSHIP-FEASIBILITY.zh-CN.md",
+          "original_sha256": "e2eda12a511f9ab91bb2a3d913afce254bc1d0e0adc9bd4c73b34d537578a323",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I23-budget-delivery-review-2026-10-28/I23-BUDGET-DELIVERY-REVIEW.zh-CN.md",
+          "original_sha256": "e11bbf17346d9319e84a32858d1e3ccd7dd7687943b878ab528d3ebec4d580be",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I23-delivery-20261027/I23-DELIVERY-REVIEW.zh-CN.md",
+          "original_sha256": "131ac8b486e4be8bf4fba03053609c06b4219b98dcf4f8757558d4aa448b24d0",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I23-screen-review-20261027-222325-945f1794/I23-SCREEN-REVIEW.zh-CN.md",
+          "original_sha256": "b0f81e75910f75dd6f64b9c866fb93a77a8ec0981748232d02d9230e3b9e4d96",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I23-PROPOSAL-2026-10-27.md",
+          "original_sha256": "83c0b732f77fa0607ef9c0d3cfe53f1bc9de897988d3fcb4dde9cd4364f9d889",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "运行器原始分析",
+          "source": "MICIUS-INT8-I23/results/i23-screen-20261027-222325-945f1794/analysis/20261027-222628-f07efdba/REPORT.zh-CN.md",
+          "original_sha256": "73cdb60a8a71a1ea72f32d0b2051f04c81dd12930f20694647126522412bd7d6",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I24": {
+      "title": "当前模型的条件预算",
+      "disposition": "支持完整接入",
+      "published": "history/int8/I24.md",
+      "sources": [
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I24/docs/AUDIT-AND-CHANGES.zh-CN.md",
+          "original_sha256": "50e96885e537d85703fe5f5c60296e1b8e3e1390ec7a2554ee566d35daa4be93",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I24/docs/BUDGET-PROTOCOL.zh-CN.md",
+          "original_sha256": "b2ea5ce251a8e8f1aa9bc023d562f9b274141cb369384aaa91f6507b00a191fa",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I24/docs/OWNERSHIP-FEASIBILITY.zh-CN.md",
+          "original_sha256": "e2eda12a511f9ab91bb2a3d913afce254bc1d0e0adc9bd4c73b34d537578a323",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I24-delivery-review-2026-10-29/I24-DELIVERY-REVIEW.zh-CN.md",
+          "original_sha256": "a93e5e3da3b09a6c7909d80461603f5fdc1dfa44d9b386428002fc2e6d1154d4",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I24-review-20261029-132403-699cbee0/I24-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "87f211c351824a71df45ac7a28670f3f862bdcf5eec5a67f06381f9bf194c60e",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I24-PROPOSAL-2026-10-29.md",
+          "original_sha256": "985242b2345faf58aa2f06c74632fbb33682c753244e45c01dcf4634ce9af5cf",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "运行器原始分析",
+          "source": "MICIUS-INT8-I24/results/i24-20261029-132403-699cbee0/analysis/20261029-142323-1bb04df2/REPORT.zh-CN.md",
+          "original_sha256": "48add8755548ec1237018e44543a8cf565768d193819a343f2317ae6fd869976",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    },
+    "I25": {
+      "title": "完整模型四行重排",
+      "disposition": "v0.7 采用 P1 验收实现",
+      "published": "history/int8/I25.md",
+      "sources": [
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I25/docs/I25-DESIGN.zh-CN.md",
+          "original_sha256": "37a2789e7a0c2a9ce990a8acdbe1a2ab3a13d2b5c46a0d188653d85ef71d8ad8",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I25-P1/docs/I25-DESIGN.zh-CN.md",
+          "original_sha256": "37a2789e7a0c2a9ce990a8acdbe1a2ab3a13d2b5c46a0d188653d85ef71d8ad8",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实现与方法",
+          "source": "MICIUS-INT8-I25-P1/docs/I25-P1-REPAIR.zh-CN.md",
+          "original_sha256": "0e26507fd9928a5a829813faf1460a2c02715bbf1be02665b263d2c5b2d42b12",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I25-delivery-review-2026-10-30/I25-DELIVERY-REVIEW.zh-CN.md",
+          "original_sha256": "2457f1460c039b699b6c84b3a35a53a68c106301b25301750d9cbfc32ab5dacc",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I25-P1-repair-review-2026-10-30/FINAL-REVIEW.zh-CN.md",
+          "original_sha256": "1f1eebd2ae6888307349ce177f79edb0989bad82d282b49902d26a8bae27c711",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "发布与修订核对",
+          "source": "reports/I25-P1-repair-review-2026-10-30/I25-P1-REPAIR.zh-CN.md",
+          "original_sha256": "0e26507fd9928a5a829813faf1460a2c02715bbf1be02665b263d2c5b2d42b12",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I25-P1-review-20261030-172448-356b2cfb/I25-P1-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "34af402dd466b3191a4eb165d86aea4fbc872121ba81c20fdb0c53a81b52c0c6",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "实验结果及审计",
+          "source": "reports/I25-P1-review-20261031-102126-e089f2f3/I25-P1-RESULTS-REVIEW.zh-CN.md",
+          "original_sha256": "0d0ab9dd987535ee4b3fce0073cc2c40e583413c25bcfab9fdbb8dcdd0d45457",
+          "representation": "edited technical text"
+        },
+        {
+          "kind": "方案及检查点",
+          "source": "planning/I25-PROPOSAL-2026-10-29.md",
+          "original_sha256": "15694a9e2d952417584ef6f0d73e90de444f6b36bf78c920d66bb77c0ac13c91",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "运行器原始分析",
+          "source": "MICIUS-INT8-I25-P1/results/i25-p1-20261030-172448-356b2cfb/analysis/20261030-180336-a779a5dd/REPORT.zh-CN.md",
+          "original_sha256": "1a67ccaacecbc7daf3b665c942f181a2728a6750566598986d9d47aec99d32c1",
+          "representation": "supporting record for synthesis"
+        },
+        {
+          "kind": "运行器原始分析",
+          "source": "MICIUS-INT8-I25-P1/results/i25-p1-20261031-102126-e089f2f3/analysis/20261031-105839-9a1e9660/REPORT.zh-CN.md",
+          "original_sha256": "453fde1c0658fa571104a7d5624051ad280a6b506a05dec8dbda4eb3772278bc",
+          "representation": "supporting record for synthesis"
+        }
+      ]
+    }
+  }
+}

@@ -1,37 +1,30 @@
-# MICIUS: Multicore Inference Concurrency for Integrated UMA Systems
+# MICIUS v0.7 · INT8
 
-![ISA](https://img.shields.io/badge/ISA-x86__64-002f6c)
-![OS](https://img.shields.io/badge/OS-Cross--Platform-green)
-![Compiler](https://img.shields.io/badge/Compiler-clang%2B%2B-red)
-![Intrinsic](https://img.shields.io/badge/Intrinsic-AVX2%20%7C%20AVX--512%20%7C%20VNNI-orange)
-![Execution](https://img.shields.io/badge/Execution-CPU_Native-yellow)
-![UMA](https://img.shields.io/badge/Memory-UMA_Optimized-blueviolet)
+MICIUS (Multicore Inference Concurrency for Integrated UMA Systems) is a C++20 CPU inference runtime. Version 0.7 ships the first INT8 release. It loads supported Llama-family Q8_0 GGUF files, accepts token IDs, and exposes prefill, greedy decode, logits, KV inspection and reset through the V1 C API.
 
-**MICIUS** is a CPU-native, low-latency speculative decoding runtime written in modern C++ with explicit AVX2 intrinsics. It is designed to maximize inference throughput on x86 multicore architectures by aggressively minimizing global synchronization, branch mispredictions, and thread migration overhead.
+The release uses the I25 four-row AVX2 weight layout and dynamic block-32 activation quantization. The qualified target is Windows x64 Clang64, single-core decode without VNNI. The F64 reference has its own build preset. The public V1 ABI is `0x00060003`.
 
-Unlike general-purpose inference frameworks, MICIUS uses a highly specialized worker array topology and lock-free memory structures to keep internal spin times under 10µs, ensuring the engine remains memory-bandwidth and compute-bound rather than scheduler-bound.
+## Build and run
 
-## Architecture Highlights
+Run from the repository root in Windows Bash.
 
-### 1. Lock-Free Concurrent Data Structures
+```bash
+bash scripts/build-int8-release-windows.sh
+./build-int8-release/bin/micius_cli.exe --version
+./build-int8-release/bin/micius_cli.exe --model-benchmark \
+  --model models/smollm2-360m-instruct-q8_0.gguf --token 42 --warmup 4 --steps 32
+```
 
-* **Treiber Stack KV Allocator:** The `KVCacheRingBuffer` relies on a 64-bit versioned atomic head (`free_head`) to solve the ABA problem lock-free. Paired with a Thread-Local Allocation Buffer (TLAB) bulk-grab mechanism, it highly reduces atomic CAS bus contention during high-frequency speculative branch spawns/rejects.
-* **Chase-Lev Work Stealing:** Worker threads operate on a custom Chase-Lev deque (L1-aligned). They push/pop tasks to their bottom end, and steal from other queues via CAS on the top end. Victim selection uses a fast inline Xorshift32 PRNG to scatter stealing requests and avoid $O(N^2)$ cache-line broadcast storms.
-* **AoSoA Draft Proposals:** Tree state is mapped into a `DraftNodeBlock8` Array of Structures of Arrays (AoSoA) layout. Each 8-node block is strictly 128-byte aligned (two cache lines for most modern x86 microarchitecture). Concurrent node spawning uses a single `LOCK XADD` (`fetch_add`), reducing global tree contention to $O(1)$ without standard mutexes.
+The build script checks the source manifest, builds the CLI, static core and stress program, and runs CTest. Place the GGUF in `models/` or pass an absolute path. Start the CLI without arguments for the interactive shell. After `load`, use `generate` with numeric token IDs. For F64, run `bash scripts/build-f64-reference-windows.sh`.
 
-### 2. SIMD Micro-Kernels
+## Release evidence
 
-* **Checked Q8_32 × F32 GEMV:** The reference backend keeps activations in FP32, sign-extends the complete `int8_t` range (including `-128`), and accumulates in F64. An optional row-pair AVX2 experiment shares activation conversion across two output rows while preserving each row's arithmetic order; its direct four-byte weight loads also avoid keeping shifted 16-byte blocks live across the eight-accumulator loop. The historical `abs/sign + maddubs` activation-requantization kernel remains legacy-only: its signed-byte transformation is not valid for every `-128`/negative-activation combination and is not used by the checked reference path.
-* **Ordered Attention Score Experiments:** The r7 default-off query-F64 cache remains available for controlled comparison, but target profiling found that its larger scratch loads raised hot-loop CPI. The current r8 default-off time-quad candidate keeps the query in FP32 and evaluates four chronological key rows with independent F64 accumulators, sharing each exact query conversion while preserving every row's dimension order, score order, and scalar tail. Neither path alters or transposes shared KV storage.
-* **Branchless Search & Top-K:** Replaces scalar branch-prediction bottlenecks with full vector-domain cascading filters. Both `BranchlessArgMax_AVX2` and `BranchlessTop3_AVX2` utilize `_mm256_blendv_ps` and `_mm256_blendv_epi8` to perform cross-lane reductions and element shifting entirely within the YMM registers.
-* **L1D Cache Rectification:** Utilizes 4-way loop unrolling (`LocalMicroCompactKV`) with continuous `_mm256_loadu_ps / _mm256_loadu_si256` parallel streams to reorganize fragmented KV chunks locally, leveraging deep branch prediction optimizations for dense array compaction.
+On two fixed SmolLM2-360M Q8_0 texts of 2,048 decode positions, I25 improved paired throughput over I22 by **18.46%**. Outputs matched the I22 reference byte for byte. After load and after decode, private commit fell by about **207 MiB**. Peak commit over the process lifetime rose by about **389.5 MiB**. These measurements belong to the frozen research build. Release integration was checked against that program through the ordinary CLI and V1 runtime.
 
-### 3. Topology-Aware Scheduling
-
-* **OS-Bypass Thread Pinning:** Implements aggressive thread affinity mapping (via `pthread_setaffinity_np` or `SetThreadAffinityMask`).
-* **Adaptive Deep Spinning:** Replaces OS-level `yield()` or sleep states with an adaptive `_mm_pause` escalation mechanism (up to 4096 pauses). This stabilizes user-mode execution rights and prevents context-switch penalties during microsecond-level synchronization waits.
-
-### 4. Memory Pool & C-ABI State Machine
-
-* **HeteroMemPool:** Explicit OS-level page locking. Attempts to map HugeTLB pages (`MAP_HUGETLB` / `VirtualAlloc` with large pages) and explicitly pins them to RAM (`mlock` / `VirtualLock`) to eliminate page faults during decoding.
-* **PumpSingleToken Machine:** Removes legacy monolithic inference loops. The entire forward pass and garbage collection (GC) pipeline is represented as an event-driven `PumpResult` state machine. This allows seamless integration into FFI layers (Python, Rust, Go) via opaque pointers without exposing unsafe internal threading logic.
+| Entry | Contents |
+|---|---|
+| [Documentation / 中文文档](docs/README.md) | Supported configurations, usage and release status |
+| [C API](include/micius_runtime.h) · [runtime semantics](docs/RUNTIME_ARCHITECTURE_AND_API.md) | Binding, ownership, sequence advancement and errors |
+| [Build](docs/BUILD_AND_CONFIGURATION.md) · [verification](docs/VALIDATION_AND_BENCHMARKING.md) | Reproducible Windows builds and tests |
+| [INT8 research ledger](docs/INT8_EXPERIMENT_LEDGER.md) | I1–I25 results, profiling, stopped candidates and repeats |
+| [License](LICENSE) | Project license |

@@ -1,3 +1,4 @@
+#include "app/BackendInfo.h"
 #include "micius_runtime.h"
 
 #include <algorithm>
@@ -84,68 +85,6 @@ const char* ModeName(RunMode mode) noexcept
         case RunMode::Contracts: return "contracts";
     }
     return "unknown";
-}
-
-const char* GEMVBackendName() noexcept
-{
-#if defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
-    return "q8_32_prepared_f64_avx2_row_pair_experimental";
-#elif defined(MICIUS_REFERENCE_GEMV_ROW_PAIR_AVX2)
-    return "q8_32_f32_avx2_row_pair_direct_load_experimental";
-#elif defined(MICIUS_REFERENCE_GEMV_AVX2)
-    return "q8_32_f32_avx2_experimental";
-#else
-    return "scalar_double_reference";
-#endif
-}
-
-const char* GEMVScaleValidationName() noexcept
-{
-#if defined(MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES)
-    return "private_v1_prevalidated_checked_fallback";
-#else
-    return "per_call_checked";
-#endif
-}
-
-const char* GEMVScaleStorageName() noexcept
-{
-#if defined(MICIUS_REFERENCE_GEMV_COMPACT_SCALES)
-    return "private_f32_per_block_experimental";
-#elif defined(MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES)
-    return "private_q8_32_descriptor_per_block";
-#else
-    return "q8_32_descriptor_checked";
-#endif
-}
-
-const char* AttentionValueBackendName() noexcept
-{
-#if defined(MICIUS_REFERENCE_ATTENTION_VALUE_AVX2)
-    return "f32_f64_avx2_order_preserving_experimental";
-#else
-    return "scalar_f64_reference";
-#endif
-}
-
-const char* AttentionScoreQueryCacheName() noexcept
-{
-#if defined(MICIUS_REFERENCE_ATTENTION_QUERY_F64_CACHE)
-    return "per_head_exact_f64_experimental";
-#elif defined(MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD)
-    return "none_time_quad_shared_conversion";
-#else
-    return "per_dot_f32_to_f64";
-#endif
-}
-
-const char* AttentionScoreTimeTileName() noexcept
-{
-#if defined(MICIUS_REFERENCE_ATTENTION_SCORE_TIME_QUAD)
-    return "four_rows_shared_query_experimental";
-#else
-    return "single_row";
-#endif
 }
 
 int CurrentProcessor() noexcept
@@ -1176,28 +1115,25 @@ AggregateResult RunWorkers(
     return aggregate;
 }
 
-void PrintConfiguration(const Options& options, const SyntheticModel& model)
+void PrintConfiguration(const Options& options, const SyntheticModel& model, const MiciusContext* context)
 {
     const MiciusConfig& config = model.Config();
     std::cout
         << "MICIUS reference stress sandbox\n"
         << "abi=0x" << std::hex << MICIUS_ABI_VERSION << std::dec << '\n'
-        << "gemv_backend=" << GEMVBackendName() << '\n'
+        << "gemv_backend=" << micius::backend::GEMVBackend(context) << '\n'
 #if defined(MICIUS_REFERENCE_GEMV_AVX2)
         << "gemv_fp_contract=off\n"
 #else
         << "gemv_fp_contract=compiler_default_scalar_reference\n"
 #endif
-#if defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
-        << "gemv_input_preparation=f64_snapshot_per_input\n"
-#else
-        << "gemv_input_preparation=inline_f32_conversion\n"
-#endif
-        << "gemv_scale_validation=" << GEMVScaleValidationName() << '\n'
-        << "gemv_scale_storage=" << GEMVScaleStorageName() << '\n'
-        << "attention_value_backend=" << AttentionValueBackendName() << '\n'
-        << "attention_score_query_cache=" << AttentionScoreQueryCacheName() << '\n'
-        << "attention_score_time_tile=" << AttentionScoreTimeTileName() << '\n'
+        << "gemv_input_preparation=" << micius::backend::InputPreparation() << '\n'
+
+        << "gemv_scale_validation=" << micius::backend::ScaleValidation() << '\n'
+        << "gemv_scale_storage=" << micius::backend::ScaleStorage(context) << '\n'
+        << "attention_value_backend=" << micius::backend::AttentionValue() << '\n'
+        << "attention_score_query_cache=" << micius::backend::QueryCache() << '\n'
+        << "attention_score_time_tile=" << micius::backend::ScoreTile() << '\n'
         << "mode=" << ModeName(options.mode) << '\n'
         << "threads=" << options.external_threads << '\n'
         << "cpu_affinity="
@@ -1263,7 +1199,6 @@ int main(int argc, char** argv)
         }
 
         SyntheticModel model(options);
-        PrintConfiguration(options, model);
 
         std::vector<ContextPtr> contexts;
         contexts.reserve(options.external_threads);
@@ -1284,6 +1219,7 @@ int main(int argc, char** argv)
             }
         }
 
+        PrintConfiguration(options, model, contexts.front().get());
         const AggregateResult result = RunWorkers(options, model, contexts);
         PrintResult(options, result);
         return result.success ? 0 : 4;

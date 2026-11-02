@@ -7,12 +7,21 @@
 void PrintBanner()
 {
     std::cout << "========================================================\n";
-    std::cout << " MICIUS Shell v0.6-rebuild\n";
+    std::cout << " MICIUS Shell v" MICIUS_VERSION_STRING "\n";
     std::cout << "========================================================\n\n";
 }
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--version") {
+        std::cout << "MICIUS " MICIUS_VERSION_STRING "\n";
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--help") {
+        std::cout << "micius_cli [--version | --model-benchmark --help]\n"
+                     "Start without arguments for the interactive shell.\n";
+        return 0;
+    }
     PrintBanner();
 
     //实例化外壳

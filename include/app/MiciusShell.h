@@ -54,6 +54,8 @@ class MiciusShell
 
 private:
     ShellContext ctx;
+    // Private experiment entry; no public runtime ABI or default CLI change.
+    int RunI6Benchmark(const std::vector<std::string>& args);
 
     //指令路由表与字符串字典
     std::unordered_map<std::string, CommandDef> cmd_router;

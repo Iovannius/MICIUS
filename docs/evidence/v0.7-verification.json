@@ -1,0 +1,184 @@
+{
+  "release": "0.7.0",
+  "verification_date": "2026-11-01",
+  "status": "PASS",
+  "root_layout_reference": "v0.6",
+  "parent_commit": "bb0046d8856c22c540fb2b3343b9801f4a5368e4",
+  "public_v1_abi": "0x00060003",
+  "host": "Windows x86_64 Clang64",
+  "compiler": "clang version 22.1.8 (https://github.com/msys2/MINGW-packages 6e4e79c2f86eeb534e324e583f2057dc9fd5ecab)",
+  "cmake": "cmake version 4.4.2",
+  "ninja": "1.13.2",
+  "profiles": {
+    "INT8": {
+      "preset": "int8-release-windows",
+      "ctest_passed": 22,
+      "ctest_failed": 0,
+      "programs": {
+        "micius_cli": {
+          "sha256_of_verification_build": "ae263aa03ce409d89e221f7741dacb2358d4063ccceba77c5a0ca51251f47655",
+          "disassembled_instructions": 248383,
+          "vnni_mnemonics": {}
+        },
+        "micius_sandbox": {
+          "sha256_of_verification_build": "c98a7ab029f6c5d0732059eacec8d243ef912ffbe568e2618f9ee8291c1b129a",
+          "disassembled_instructions": 218429,
+          "vnni_mnemonics": {}
+        }
+      },
+      "normal_cli_version": "0.7.0",
+      "research_benchmark_compiled": false
+    },
+    "F64": {
+      "preset": "f64-reference-windows",
+      "ctest_passed": 15,
+      "ctest_failed": 0,
+      "programs": {
+        "micius_cli": {
+          "sha256_of_verification_build": "f43e5665c0c9cc04e20208671a21f9f973b12d693092b5b44de3a11ad3dcfd9b"
+        },
+        "micius_sandbox": {
+          "sha256_of_verification_build": "b56731770e0e9686b9af372205d34003fa75cd513ba0cd185fc6a7d11d957d61"
+        }
+      },
+      "normal_cli_version": "0.7.0",
+      "research_benchmark_compiled": false
+    }
+  },
+  "source_reconciliation": {
+    "accepted_P1_manifest": "8605f300f6740e6105d087424e3b76c1497b85fc24f2c4f7a1ec7d25544473aa",
+    "accepted_runtime_files": 62,
+    "added": [
+      "src/app/BackendInfo.cpp",
+      "src/app/BackendInfo.h"
+    ],
+    "changed": [
+      "src/AI/i25/PanelGEMV.h",
+      "src/app/I22Memory.h",
+      "src/app/MiciusCLIMain.cpp",
+      "src/app/MiciusShell.cpp"
+    ],
+    "panel_header_comment_only": true,
+    "public_ABI_and_frozen_F64_files": [
+      "include/micius_runtime.h",
+      "src/AI/PreparedGEMVInput.h",
+      "src/AI/PreparedGEMVWeights.cpp",
+      "src/AI/ReferenceGEMVAVX2.cpp",
+      "src/AI/ReferenceF32WeightGEMVAVX2.cpp",
+      "src/AI/ReferenceAttentionAVX2.cpp"
+    ],
+    "release_manifest_files": 104
+  },
+  "source_manifest_sha256": "8740a790173c0138226a6b9daed4b9969d35ca94f5b3212617708c4d7d41f2d9",
+  "source_guard_cases_passed": [
+    "clean",
+    "extra_hidden_cpp",
+    "missing_header",
+    "modified_header"
+  ],
+  "invalid_configurations_rejected": [
+    "fast-math",
+    "partial-panel"
+  ],
+  "synthetic_output_comparison": {
+    "status": "PASS",
+    "reference_sha256": {
+      "F64": "42bfddee79f8ac526b12f9e64984cfa89942689af39abb9c6281b78b92127351",
+      "INT8": "2fa7baad82943faac93de7bc4eb86fb759c9a5f9559e358cb27b3742b371e058"
+    },
+    "full_trace_checks": [
+      {
+        "backend": "INT8",
+        "fixture": "gqa3",
+        "steps": 160,
+        "vocab": 128,
+        "model_sha256": "1f28d06c89cc4bff377d16477321e24797ff4c5fea37136a000ca626690a41ff",
+        "trace_sha256": "d9305a3058c0a96fe6c9331849ee64d9b3ea37109dc80fde845aa9a037438395",
+        "reported_kernel": "w8a8_avx2_panel4"
+      },
+      {
+        "backend": "INT8",
+        "fixture": "untied",
+        "steps": 160,
+        "vocab": 128,
+        "model_sha256": "879cd1193cbc8510705a70b8dbc042139fd8f21a68ebbc6ed7dde076e565c405",
+        "trace_sha256": "0899561df9e0b5ce327d964c8449e1f6224bb6e2c135ae3d57aaa0aca21c3e3b",
+        "reported_kernel": "w8a8_avx2_panel4"
+      },
+      {
+        "backend": "INT8",
+        "fixture": "tail",
+        "steps": 160,
+        "vocab": 127,
+        "model_sha256": "91dd6c492b58dcfb9147c7dbbcf5b22207d44bbed1dfc01fbd6d446866e60ffe",
+        "trace_sha256": "c3e227c0d95f2f9fe727219eddcd6d93cad70956f9b10cbde00e3e1bd0795430",
+        "reported_kernel": "w8a8_avx2_row4"
+      },
+      {
+        "backend": "F64",
+        "fixture": "gqa3",
+        "steps": 160,
+        "vocab": 128,
+        "model_sha256": "1f28d06c89cc4bff377d16477321e24797ff4c5fea37136a000ca626690a41ff",
+        "trace_sha256": "f6a6cb4c18565f658d04c2cbe18a42d05d299b61bb57cc7ab16723d5b956e10f",
+        "reported_kernel": "q8_32_prepared_f64_avx2_row_pair_experimental"
+      },
+      {
+        "backend": "F64",
+        "fixture": "untied",
+        "steps": 160,
+        "vocab": 128,
+        "model_sha256": "879cd1193cbc8510705a70b8dbc042139fd8f21a68ebbc6ed7dde076e565c405",
+        "trace_sha256": "a8700dad2c4d59062534e14f74aba4dc1693aab963bf1402ebd17ea952c749b1",
+        "reported_kernel": "q8_32_prepared_f64_avx2_row_pair_experimental"
+      },
+      {
+        "backend": "F64",
+        "fixture": "tail",
+        "steps": 160,
+        "vocab": 127,
+        "model_sha256": "91dd6c492b58dcfb9147c7dbbcf5b22207d44bbed1dfc01fbd6d446866e60ffe",
+        "trace_sha256": "3da9e112b3dee226381e05b8cbe3a8c5be97d1d7119e7a2f6e50b254456ff625",
+        "reported_kernel": "q8_32_prepared_f64_avx2_row_pair_experimental"
+      }
+    ],
+    "checks_per_backend": [
+      "ordinary CLI greedy decode",
+      "interactive numeric-ID generation",
+      "invalid token",
+      "unknown option",
+      "three V1 sandbox bind/reset cycles"
+    ],
+    "real_model_samples": 0
+  },
+  "historical_stages": 25,
+  "indexed_documents": 122,
+  "historical_target_run": {
+    "id": "i25-p1-20261031-102126-e089f2f3",
+    "subject": "I25 P1 compared with I22",
+    "full_traces": 4,
+    "timing_samples": 24,
+    "paired_speedup": 1.1846354785556157,
+    "max_spread": 1.0334119120240683,
+    "candidate_accepted": true,
+    "peak_increase_bytes": [
+      408446976.0,
+      408444928.0
+    ],
+    "private_commit_reductions": [
+      {
+        "after_load": 217296896,
+        "after_decode_2048": 217423872
+      },
+      {
+        "after_load": 217321472,
+        "after_decode_2048": 217096192
+      }
+    ],
+    "archived_sha256": {
+      "REVIEW": "39d8352927b62f34080b30f9ebb807a4111721971180872a3d18a00e2cc8794a",
+      "FULL": "294a5ee3ecfe8c9175cd6a57242f55f3ac0a15d7592d5e15353e8ee92cfe62cf"
+    }
+  },
+  "release_target_model_samples": 0
+}

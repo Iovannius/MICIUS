@@ -31,3 +31,6 @@ logs/
 experiments/
 
 !.gitignore
+
+/build-*/
+__pycache__/

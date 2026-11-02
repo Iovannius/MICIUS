@@ -1,0 +1,30 @@
+{
+  "INT8": {
+    "gqa3": {
+      "trace_sha256": "d9305a3058c0a96fe6c9331849ee64d9b3ea37109dc80fde845aa9a037438395",
+      "reported_kernel": "w8a8_avx2_panel4"
+    },
+    "untied": {
+      "trace_sha256": "0899561df9e0b5ce327d964c8449e1f6224bb6e2c135ae3d57aaa0aca21c3e3b",
+      "reported_kernel": "w8a8_avx2_panel4"
+    },
+    "tail": {
+      "trace_sha256": "c3e227c0d95f2f9fe727219eddcd6d93cad70956f9b10cbde00e3e1bd0795430",
+      "reported_kernel": "w8a8_avx2_row4"
+    }
+  },
+  "F64": {
+    "gqa3": {
+      "trace_sha256": "f6a6cb4c18565f658d04c2cbe18a42d05d299b61bb57cc7ab16723d5b956e10f",
+      "reported_kernel": "q8_32_prepared_f64_avx2_row_pair_experimental"
+    },
+    "untied": {
+      "trace_sha256": "a8700dad2c4d59062534e14f74aba4dc1693aab963bf1402ebd17ea952c749b1",
+      "reported_kernel": "q8_32_prepared_f64_avx2_row_pair_experimental"
+    },
+    "tail": {
+      "trace_sha256": "3da9e112b3dee226381e05b8cbe3a8c5be97d1d7119e7a2f6e50b254456ff625",
+      "reported_kernel": "q8_32_prepared_f64_avx2_row_pair_experimental"
+    }
+  }
+}

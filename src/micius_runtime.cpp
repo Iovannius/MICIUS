@@ -903,3 +903,10 @@ bool Micius_GetWorkerInfo(
 }
 
 } // extern "C"
+
+micius::i25::Stats micius::i25::BindingStats(const MiciusContext* c) noexcept {
+    return c && c->core_engine ? c->core_engine->I25Stats() : Stats{};
+}
+std::span<const micius::i25::RetiredWeight> micius::i25::RetirableWeights(const MiciusContext* c) noexcept {
+    return c && c->core_engine ? c->core_engine->I25Retired() : std::span<const RetiredWeight>{};
+}
