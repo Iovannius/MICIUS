@@ -1,15 +1,21 @@
-"""Check the v0.7 source tree. Git LF and Windows CRLF have the same identity."""
+"""Verify the published v0.7.1 files, including all files in source directories."""
 import hashlib
 import json
 from pathlib import Path
 
+MANIFEST = Path(__file__).resolve().parents[1] / "RELEASE-MANIFEST.json"
+
 
 def verify():
-    root = Path(__file__).resolve().parents[1]
-    manifest = json.loads((root / "docs/evidence/v0.7-source.json").read_text(encoding="utf-8"))
+    root = MANIFEST.parent
+    manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+    if manifest["release"] != "0.7.1":
+        raise SystemExit("Expected the MICIUS v0.7.1 release manifest")
     expected = manifest["files"]
-    names = {"CMakeLists.txt", "CMakePresets.json"}
-    for folder in ("src", "include", "scripts", "tests"):
+    names = {"CMakeLists.txt", "CMakePresets.json", ".gitattributes", ".gitignore", "LICENSE", "README.md"}
+    for folder in ("src","include","scripts","tests","docs","cmake","examples","validation"):
+        if (root / folder).is_symlink():
+            raise SystemExit(f"Unexpected symbolic link: {folder}")
         for path in (root / folder).rglob("*"):
             if path.is_symlink():
                 raise SystemExit(f"Unexpected symbolic link: {path.relative_to(root)}")
@@ -22,13 +28,19 @@ def verify():
         path = root / name
         if name not in expected:
             errors.append("unexpected: " + name)
-        elif name not in names or not path.is_file():
+        elif name not in names or path.is_symlink() or not path.is_file():
             errors.append("missing: " + name)
-        elif hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest() != expected[name]:
-            errors.append("modified: " + name)
+        else:
+            data = path.read_bytes()
+            if path.suffix == ".sh" and b"\r" in data:
+                errors.append("Bash script requires LF: " + name)
+            if path.suffix != ".zlib":
+                data = data.replace(b"\r\n", b"\n")
+            if hashlib.sha256(data).hexdigest() != expected[name]:
+                errors.append("modified: " + name)
     if errors:
-        raise SystemExit("v0.7 source check failed\n" + "\n".join(errors))
-    print(f"v0.7 source check passed ({len(expected)} source, test and build files)")
+        raise SystemExit("v0.7.1 source check failed\n" + "\n".join(errors))
+    print(f"v0.7.1 source check passed ({len(expected)} distribution files)")
 
 
 if __name__ == "__main__":

@@ -170,8 +170,9 @@ void TestValidConfigAndRepeatParse()
     {
         GGUFParser parser(path.string());
         assert(parser.ParseHeaders());
-        MiciusConfig config{};
-        assert(parser.ExtractEngineConfig(config));
+        MiciusGGUFPlanV1 plan{};
+        auto& config = plan.config;
+        assert(parser.Describe(*Micius_LlamaParserV1(), plan));
         assert(config.hidden_dim == 64);
         assert(config.vocab_size == 2);
         assert(config.num_layers == 1);
@@ -221,9 +222,10 @@ void TestAlignmentAndScalingRejection()
     {
         GGUFParser parser(scaling_path.string());
         assert(parser.ParseHeaders());
-        MiciusConfig config{};
+        MiciusGGUFPlanV1 plan{};
+        auto& config = plan.config;
         config.hidden_dim = 0xA5A5A5A5U;
-        assert(!parser.ExtractEngineConfig(config));
+        assert(!parser.Describe(*Micius_LlamaParserV1(), plan));
         assert(config.hidden_dim == 0xA5A5A5A5U);
     }
     std::filesystem::remove(scaling_path);
@@ -237,8 +239,9 @@ void TestUint64MetadataAndArchitectureSubset()
     {
         GGUFParser parser(large_metadata_path.string());
         assert(parser.ParseHeaders());
-        MiciusConfig config{};
-        assert(parser.ExtractEngineConfig(config));
+        MiciusGGUFPlanV1 plan{};
+        auto& config = plan.config;
+        assert(parser.Describe(*Micius_LlamaParserV1(), plan));
         assert(config.hidden_dim == 64);
     }
     std::filesystem::remove(large_metadata_path);
@@ -249,8 +252,9 @@ void TestUint64MetadataAndArchitectureSubset()
     {
         GGUFParser parser(sliding_path.string());
         assert(parser.ParseHeaders());
-        MiciusConfig config{};
-        assert(!parser.ExtractEngineConfig(config));
+        MiciusGGUFPlanV1 plan{};
+        auto& config = plan.config;
+        assert(!parser.Describe(*Micius_LlamaParserV1(), plan));
     }
     std::filesystem::remove(sliding_path);
 
@@ -260,8 +264,9 @@ void TestUint64MetadataAndArchitectureSubset()
     {
         GGUFParser parser(key_length_path.string());
         assert(parser.ParseHeaders());
-        MiciusConfig config{};
-        assert(!parser.ExtractEngineConfig(config));
+        MiciusGGUFPlanV1 plan{};
+        auto& config = plan.config;
+        assert(!parser.Describe(*Micius_LlamaParserV1(), plan));
     }
     std::filesystem::remove(key_length_path);
 }

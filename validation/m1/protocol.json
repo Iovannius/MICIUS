@@ -1,0 +1,69 @@
+{
+  "unit": "M1",
+  "base_release": "65d51713ac905b9f84cab865241c0e3cc9432a41",
+  "source_run": "i7-p1-20261014-120451-0628d651",
+  "review_sha256": "62880a5fde8c50e3fb45975bbfda1739e31eebeb2849f29e5f691e501dc2676f",
+  "segment": "s00",
+  "steps": 8,
+  "qwen_gates": {
+    "max_centered_relative_l2_per_position": 0.35,
+    "mean_absolute_target_nll_difference_nats": 0.75
+  },
+  "models": {
+    "smol": {
+      "filename": "smollm2-360m-instruct-q8_0.gguf",
+      "model_sha256": "48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201",
+      "bytes": 386404992,
+      "vocab": 49152,
+      "architecture": "llama",
+      "input_file_sha256": "ce43bf129346ef5b2534384a0f3fd53061f781c4a9b928b2153fd7dcd7ad5338",
+      "ids_with_next_target": [
+        446,
+        13200,
+        497,
+        344,
+        9542,
+        974,
+        446,
+        216,
+        16506
+      ],
+      "reference": {
+        "I1": {
+          "full_sha256": "28c9fd443afd28c6a06818875bd5a380e4ec69e94b0bd3ecbafe3c937dda445a",
+          "prefix_sha256": "b91bbaf4468e15cc9750f2f94c034f6953ca3602943dee4dc24f47597a60bdd4"
+        },
+        "F64": {
+          "full_sha256": "9d1a9f140b69211be5b78678f076b76aa1c09dfdcfa2bb8d0fdb46fb29885124",
+          "prefix_sha256": "5d9f76a366c82321ee8320c7e8dec9f75b0d2ebb2d06698806c5a5c76af6e17b"
+        }
+      }
+    },
+    "qwen": {
+      "filename": "qwen2.5-1.5b-instruct-q8_0.gguf",
+      "model_sha256": "d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8",
+      "bytes": 1894532128,
+      "vocab": 151936,
+      "architecture": "qwen2",
+      "input_file_sha256": "1cd51d957a98fe97121c135de632552202a3503b8755f327ab6ca7cb89f1ddc0",
+      "ids_with_next_target": [
+        284,
+        16570,
+        564,
+        329,
+        4116,
+        5270,
+        284,
+        14731,
+        1527
+      ],
+      "reference": {
+        "LLAMA": {
+          "full_sha256": "1fe316ec489a9f6af878588bb4c3b70eba4e607f420006bbd2a6666555d49ba2",
+          "prefix_sha256": "c36d8147cdf921a16650d093660d64b8f2eff97bf65fd5fcb350f74966541c48"
+        }
+      }
+    }
+  },
+  "v07_header_sha256": "c7fa23d3bd00d97dac22fc7337d1a2b6e33aa76cd751fb3bc9bc5f7ae0a02607"
+}

@@ -1,7 +1,9 @@
 #include "MiciusGGUFParser.h"
+#include "gguf/NativePath.h"
 
 #include <algorithm>
 #include <iostream>
+#include <filesystem>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -26,7 +28,7 @@ GGUFParser::GGUFParser(const std::string& path)
     hFile = INVALID_HANDLE_VALUE;
     hMapping = NULL;
     
-    hFile = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    hFile = CreateFileW(micius::gguf::NativePath(std::filesystem::u8path(path)).c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) throw std::runtime_error(std::string("Failed to open file: ") + path);
     
     LARGE_INTEGER li{};
@@ -143,7 +145,12 @@ void GGUFParser::SkipValue(uint32_t type, uint32_t depth)
         case 5: SkipBytes(4); break; // INT32
         case 6: SkipBytes(4); break; // FLOAT32
         case 7: SkipBytes(1); break; // BOOL
-        case 8: ReadString(); break; // STRING
+        case 8: {
+            const auto bytes = ReadU64();
+            if (bytes > SIZE_MAX) throw std::runtime_error("GGUF string exceeds addressable space");
+            SkipBytes(static_cast<size_t>(bytes));
+            break;
+        }
         case 9: { // ARRAY
             uint32_t arr_type = ReadU32();
             uint64_t arr_len = ReadU64();
@@ -169,6 +176,8 @@ bool GGUFParser::ParseHeaders()
     kv_floats.clear();
     tensors.clear();
     vocab_strings.clear();
+    merges_record = types_record = {};
+    tokenizer_flags.clear();
     if (ReadU32() != GGUF_MAGIC) return false;
     
     uint32_t version = ReadU32();
@@ -180,13 +189,13 @@ bool GGUFParser::ParseHeaders()
         throw std::runtime_error("GGUF entry counts exceed conservative file bounds");
     }
 
-    std::unordered_set<std::string> metadata_names;
+    metadata_names.clear();
     metadata_names.reserve(static_cast<size_t>(kv_count));
 
     //抓取字典KV Pairs
     for (uint64_t i = 0; i < kv_count; ++i) {
         std::string key = ReadString();
-        if (!metadata_names.insert(key).second) {
+        if (key.empty() || key.find('\0') != std::string::npos || !metadata_names.insert(key).second) {
             throw std::runtime_error("GGUF contains a duplicate metadata key");
         }
         uint32_t type = ReadU32();
@@ -207,6 +216,8 @@ bool GGUFParser::ParseHeaders()
             kv_floats[key] = value;
         } else if (type == 8) { // STRING
             kv_strings[key] = ReadString();
+            if (kv_strings[key].find('\0') != std::string::npos)
+                throw std::runtime_error("Embedded NUL in GGUF metadata string");
         } else if (type == 9 && key == "tokenizer.ggml.tokens") { // ARRAY
             //获取Token字符串
             uint32_t arr_type = ReadU32();
@@ -215,16 +226,22 @@ bool GGUFParser::ParseHeaders()
                 arr_len > std::numeric_limits<size_t>::max()) {
                 throw std::runtime_error("tokenizer vocabulary is too large");
             }
-            kv_uint32s["_magic_vocab_size"] = static_cast<uint32_t>(arr_len);
+            if (arr_type != 8 || arr_len > (file_size - cursor) / 8)
+                throw std::runtime_error("tokenizer vocabulary must be a bounded string array");
             
             vocab_strings.reserve(static_cast<size_t>(arr_len));
             for(uint64_t j = 0; j < arr_len; ++j) {
-                if (arr_type == 8) { //如果是STRING类型，读入词表
-                    vocab_strings.push_back(ReadString());
-                } else {
-                    SkipValue(arr_type);
-                }
+                vocab_strings.push_back(ReadString());
             }
+        } else if (type == 7 && key.starts_with("tokenizer.ggml.")) {
+            uint8_t flag;
+            ReadBytes(&flag, sizeof(flag));
+            tokenizer_flags.emplace(key, flag);
+        } else if (type == 9 && (key == "tokenizer.ggml.merges" || key == "tokenizer.ggml.token_type")) {
+            const size_t begin = cursor;
+            SkipValue(type);
+            auto& record = key == "tokenizer.ggml.merges" ? merges_record : types_record;
+            record = {static_cast<const char*>(mmap_addr) + begin, cursor - begin};
         } else {
             SkipValue(type);
         }
@@ -237,7 +254,7 @@ bool GGUFParser::ParseHeaders()
     for (uint64_t i = 0; i < tensor_count; ++i) {
         GGUFTensorInfo info{};
         info.name = ReadString();
-        if (info.name.empty() || !tensor_names.insert(info.name).second) {
+        if (info.name.empty() || info.name.find('\0') != std::string::npos || !tensor_names.insert(info.name).second) {
             throw std::runtime_error("GGUF tensor name is empty or duplicated");
         }
         info.n_dims = ReadU32();
@@ -327,101 +344,80 @@ bool GGUFParser::ParseHeaders()
     return true;
 }
 
-bool GGUFParser::ExtractEngineConfig(MiciusConfig& out_config) 
+const std::string& GGUFParser::Architecture() const
 {
-    if (!parsed) return false;
-    const auto architecture = kv_strings.find("general.architecture");
-    if (architecture == kv_strings.end() || architecture->second != "llama") return false;
+    const auto it = kv_strings.find("general.architecture");
+    if (!parsed || it == kv_strings.end() || it->second.empty())
+        throw std::runtime_error("GGUF requires a string general.architecture");
+    return it->second;
+}
 
-    MiciusConfig candidate{};
-    candidate.kv_pool_size_mb = 16;
-    candidate.worker_threads = 0;
-    candidate.execution_mode = MICIUS_EXECUTION_REFERENCE;
-    candidate.rope_freq_base = 10000.0f;
+std::string_view GGUFParser::TextString(const char* key) const
+{
+    const auto it = kv_strings.find(key);
+    if (it != kv_strings.end()) return it->second;
+    if (metadata_names.contains(key)) throw std::runtime_error(std::string("Expected a GGUF string: ") + key);
+    return {};
+}
 
-    auto read_integer = [&](const char* key, uint64_t* value) -> bool {
-        if (!value) return false;
-        const auto found32 = kv_uint32s.find(key);
-        if (found32 != kv_uint32s.end()) {
-            *value = found32->second;
-            return true;
-        }
-        const auto found64 = kv_uint64s.find(key);
-        if (found64 == kv_uint64s.end()) return false;
-        *value = found64->second;
-        return true;
+uint32_t GGUFParser::TextUint(const char* key) const
+{
+    const auto it = kv_uint32s.find(key);
+    if (it == kv_uint32s.end()) throw std::runtime_error(std::string("Expected a GGUF uint32: ") + key);
+    return it->second;
+}
+
+bool GGUFParser::TextFlag(const char* key) const
+{
+    const auto it = tokenizer_flags.find(key);
+    if (it != tokenizer_flags.end()) {
+        if (it->second > 1) throw std::runtime_error(std::string("Invalid tokenizer flag: ") + key);
+        return it->second != 0;
+    }
+    if (metadata_names.contains(key)) throw std::runtime_error(std::string("Expected a GGUF boolean: ") + key);
+    return false;
+}
+
+bool GGUFParser::Describe(const MiciusGGUFParserV1& module, MiciusGGUFPlanV1& plan) const
+{
+    if (!parsed || module.abi_version != MICIUS_GGUF_PARSER_ABI || module.struct_size < sizeof(module) ||
+        !module.architecture || Architecture() != module.architecture || !module.describe || !module.map_tensor)
+        return false;
+    MiciusGGUFMetadataV1 view{};
+    view.reader = this;
+    view.vocab_size = static_cast<uint32_t>(vocab_strings.size());
+    view.get_uint = [](const void* opaque, const char* k, uint64_t* out) {
+        const auto& r = *static_cast<const GGUFParser*>(opaque);
+        if (const auto it = r.kv_uint32s.find(k); it != r.kv_uint32s.end()) { *out = it->second; return 1; }
+        if (const auto it = r.kv_uint64s.find(k); it != r.kv_uint64s.end()) { *out = it->second; return 1; }
+        return r.metadata_names.contains(k) ? -1 : 0;
     };
-    auto read_required = [&](const char* key, uint32_t* value) -> bool {
-        uint64_t integer = 0;
-        if (!value || !read_integer(key, &integer) || integer == 0 ||
-            integer > std::numeric_limits<uint32_t>::max()) {
-            return false;
-        }
-        *value = static_cast<uint32_t>(integer);
-        return true;
+    view.get_float = [](const void* opaque, const char* k, double* out) {
+        const auto& r = *static_cast<const GGUFParser*>(opaque);
+        if (const auto it = r.kv_floats.find(k); it != r.kv_floats.end()) { *out = it->second; return 1; }
+        return r.metadata_names.contains(k) ? -1 : 0;
     };
-
-    if (!read_required("llama.embedding_length", &candidate.hidden_dim) ||
-        !read_required("_magic_vocab_size", &candidate.vocab_size) ||
-        !read_required("llama.context_length", &candidate.max_seq_len) ||
-        !read_required("llama.block_count", &candidate.num_layers) ||
-        !read_required("llama.attention.head_count", &candidate.num_heads) ||
-        !read_required("llama.feed_forward_length", &candidate.intermediate_dim)) {
-        return false;
-    }
-
-    uint64_t kv_heads = candidate.num_heads;
-    (void)read_integer("llama.attention.head_count_kv", &kv_heads);
-    if (kv_heads > std::numeric_limits<uint32_t>::max()) return false;
-    candidate.num_kv_heads = static_cast<uint32_t>(kv_heads);
-    if (candidate.num_kv_heads == 0 || candidate.num_heads == 0 ||
-        candidate.hidden_dim % candidate.num_heads != 0 ||
-        candidate.num_heads % candidate.num_kv_heads != 0) {
-        return false;
-    }
-    candidate.head_dim = candidate.hidden_dim / candidate.num_heads;
-    uint64_t rope_dimension = candidate.head_dim;
-    (void)read_integer("llama.rope.dimension_count", &rope_dimension);
-    if (rope_dimension > std::numeric_limits<uint32_t>::max()) return false;
-    candidate.rope_dimension_count = static_cast<uint32_t>(rope_dimension);
-
-    uint64_t optional_dimension = 0;
-    if (read_integer("llama.attention.key_length", &optional_dimension) &&
-        optional_dimension != candidate.head_dim) {
-        return false;
-    }
-    if (read_integer("llama.attention.value_length", &optional_dimension) &&
-        optional_dimension != candidate.head_dim) {
-        return false;
-    }
-    uint64_t sliding_window = 0;
-    if (read_integer("llama.attention.sliding_window", &sliding_window) &&
-        sliding_window != 0) {
-        // The reference attention path is full causal attention only.
-        return false;
-    }
-
-    auto rms_epsilon = kv_floats.find("llama.attention.layer_norm_rms_epsilon");
-    if (rms_epsilon == kv_floats.end() || rms_epsilon->second <= 0.0 ||
-        rms_epsilon->second > std::numeric_limits<float>::max()) {
-        return false;
-    }
-    candidate.rms_norm_epsilon = static_cast<float>(rms_epsilon->second);
-
-    auto rope_base = kv_floats.find("llama.rope.freq_base");
-    candidate.rope_freq_base = rope_base == kv_floats.end()
-        ? 10000.0f
-        : static_cast<float>(rope_base->second);
-    if (!std::isfinite(candidate.rope_freq_base) || candidate.rope_freq_base <= 0.0f) {
-        return false;
-    }
-    auto rope_scaling = kv_strings.find("llama.rope.scaling.type");
-    if (rope_scaling != kv_strings.end() &&
-        rope_scaling->second != "none" && !rope_scaling->second.empty()) {
-        return false;
-    }
-    out_config = candidate;
+    view.get_string = [](const void* opaque, const char* k, const char** out) {
+        const auto& r = *static_cast<const GGUFParser*>(opaque);
+        if (const auto it = r.kv_strings.find(k); it != r.kv_strings.end()) { *out = it->second.c_str(); return 1; }
+        return r.metadata_names.contains(k) ? -1 : 0;
+    };
+    MiciusGGUFPlanV1 candidate{};
+    if (module.describe(&view, &candidate) != 1 ||
+        (candidate.features & ~(MICIUS_GGUF_QKV_BIAS | MICIUS_GGUF_SPLIT_HALF_ROPE))) return false;
+    plan = candidate;
     return true;
+}
+
+void GGUFParser::MapTensors(const MiciusGGUFParserV1& module, const MiciusGGUFPlanV1& plan)
+{
+    std::unordered_set<std::string> canonical;
+    for (auto& t : tensors) {
+        const char* mapped = module.map_tensor(t.name.c_str(), &plan);
+        if (!mapped || !*mapped || !canonical.emplace(mapped).second)
+            throw std::runtime_error("Unsupported or duplicate tensor mapping: " + t.name);
+        if (mapped != t.name.c_str()) t.name = mapped;
+    }
 }
 
 const void* GGUFParser::GetTensorData(uint64_t offset) const noexcept

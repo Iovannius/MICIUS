@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <type_traits>
+#include <mutex>
 
 namespace micius {
 namespace log {
@@ -20,13 +21,13 @@ struct alignas(64) LogEvent {
     uint32_t thread_id;
     uint32_t epoch;
     LogLevel level;
-    uint8_t  padding[3]; 
+    ArgType  types[3];
     
     union {
-        uint64_t u64_args[3];
-        double   f64_args[3];
-        int64_t  i64_args[3];
-    } payload;
+        uint64_t u64;
+        double   f64;
+        int64_t  i64;
+    } payload[3];
 };
 static_assert(sizeof(LogEvent) == 64, "LogEvent must be exactly 64 bytes.");
 
@@ -121,7 +122,7 @@ public:
         return instance;
     }
 
-    void Start(int shadow_core_id, const char* log_file_path);
+    bool Start(int shadow_core_id, const char* log_file_path);
     void Stop();
     static uint64_t GetFastNanoTime();
 
@@ -132,6 +133,11 @@ public:
         
         static_assert(sizeof...(Args) <= 3, "MICIUS Logger supports max 3 arguments.");
 
+        // Stop closes admission, waits for admitted publishers, then drains.
+        auto gate = publishers_.load(std::memory_order_relaxed);
+        do {
+            if ((gate & closed_) || !fmt || !file) return;
+        } while (!publishers_.compare_exchange_weak(gate,gate+1,std::memory_order_acquire));
         LogEvent event{};
         event.timestamp_ns = GetFastNanoTime();
         event.file_name = file;
@@ -140,32 +146,30 @@ public:
         event.thread_id = thread_id;
         event.epoch = epoch;
         event.level = level;
-        event.padding[0] = static_cast<uint8_t>(ArgType::NONE);
-        event.padding[1] = static_cast<uint8_t>(ArgType::NONE);
-        event.padding[2] = static_cast<uint8_t>(ArgType::NONE);
 
         int index = 0;
         ([&] {
             using T = std::decay_t<Args>;
             constexpr ArgType type = GetArgType<T>();
-            event.padding[index] = static_cast<uint8_t>(type);
+            event.types[index] = type;
             
             if constexpr (type == ArgType::FLOAT64) {
-                event.payload.f64_args[index] = static_cast<double>(args);
+                event.payload[index].f64 = static_cast<double>(args);
             } else if constexpr (type == ArgType::INT64) {
-                event.payload.i64_args[index] = static_cast<int64_t>(args);
+                event.payload[index].i64 = static_cast<int64_t>(args);
             } else if constexpr (std::is_pointer_v<T>) {
-                event.payload.u64_args[index] =
+                event.payload[index].u64 =
                     static_cast<uint64_t>(reinterpret_cast<uintptr_t>(args));
             } else if constexpr (type == ArgType::UINT64) {
-                event.payload.u64_args[index] = static_cast<uint64_t>(args);
+                event.payload[index].u64 = static_cast<uint64_t>(args);
             } else {
-                event.payload.u64_args[index] = 0;
+                event.payload[index].u64 = 0;
             }
             index++;
         }(), ...);
 
-        (void)queue_.Enqueue(event);
+        if (!queue_.Enqueue(event)) dropped_.fetch_add(1,std::memory_order_relaxed);
+        publishers_.fetch_sub(1,std::memory_order_release);
     }
 
 private:
@@ -177,6 +181,10 @@ private:
 
     struct DaemonState; 
     DaemonState* daemon_state_ = nullptr;
+    static constexpr uint32_t closed_ = UINT32_C(1) << 31;
+    std::atomic<uint32_t> publishers_{closed_};
+    std::atomic<uint64_t> dropped_{0};
+    std::mutex lifecycle_;
     
     AsyncLogQueue<65536> queue_; 
 };

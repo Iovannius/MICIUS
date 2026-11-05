@@ -1,9 +1,9 @@
 #include "BackendInfo.h"
-#include "I25LoaderLifetime.h"
 #include "MiciusShell.h"
-#include "I22LoaderLifetime.h"
+#include "gguf/NativePath.h"
 #include "I22Memory.h"
-#include "MiciusTensorCodec.h"
+#include <cstdlib>
+#include <memory>
 #if defined(MICIUS_I4_EVALUATION)
 #include "I4Evaluation.h"
 #endif
@@ -18,6 +18,7 @@
 #include <chrono>
 #include <bit>
 #include <charconv>
+#include <climits>
 #include <cmath>
 #include <cstring>
 #include <iomanip>
@@ -33,80 +34,6 @@
 #elif defined(__linux__)
     #include <pthread.h>
     #include <sched.h>
-#endif
-
-using ShellQuantDescriptor = MiciusQ8Block32Scale;
-static_assert(sizeof(ShellQuantDescriptor) == 16);
-
-static bool CheckedProduct(size_t lhs, size_t rhs, size_t* result) noexcept
-{
-    if (!result || (lhs != 0 && rhs > std::numeric_limits<size_t>::max() / lhs)) {
-        return false;
-    }
-    *result = lhs * rhs;
-    return true;
-}
-
-static bool GetTensorElementCount(const GGUFTensorInfo& tensor, size_t* count) noexcept
-{
-    if (!count || tensor.n_dims == 0 || tensor.n_dims > 4) return false;
-    size_t product = 1;
-    for (uint32_t i = 0; i < tensor.n_dims; ++i) {
-        if (tensor.dimensions[i] == 0 ||
-            tensor.dimensions[i] > std::numeric_limits<size_t>::max() ||
-            !CheckedProduct(product, static_cast<size_t>(tensor.dimensions[i]), &product)) {
-            return false;
-        }
-    }
-    *count = product;
-    return true;
-}
-
-static MiciusTensorEntryV1 MakeBridgeEntry(
-    const char* name,
-    const void* data,
-    size_t byte_size,
-    MiciusTensorDataType type,
-    uint32_t rank,
-    uint64_t rows,
-    uint64_t columns,
-    size_t row_stride_bytes) noexcept
-{
-    MiciusTensorEntryV1 entry{};
-    entry.tensor_name = name;
-    entry.tensor_data = data;
-    entry.byte_size = byte_size;
-    entry.data_type = static_cast<uint32_t>(type);
-    entry.rank = rank;
-    entry.dimensions[0] = rows;
-    entry.dimensions[1] = columns;
-    entry.row_stride_bytes = row_stride_bytes;
-    return entry;
-}
-
-#if defined(MICIUS_I6_BENCHMARK)
-static void I22Ledger(const char* phase,const ShellContext* ctx,
-    const std::vector<MiciusTensorEntryV1>& entries,size_t released=0) {
-    if(!micius::i22::Observing())return;
-    std::ostringstream x;size_t bytes=0,scales=0,weights=0,f32=0,count=0;
-    x<<",\"allocations\":[";
-    for(const auto& e:entries) {
-        if(std::find(ctx->managed_buffers.begin(),ctx->managed_buffers.end(),e.tensor_data)==ctx->managed_buffers.end())continue;
-        if(count++)x<<',';
-        x<<"{\"name\":"<<micius::i22::Quote(e.tensor_name)<<",\"type\":"<<e.data_type<<",\"requested_bytes\":"<<e.byte_size<<",\"alignment\":64}";
-        bytes+=e.byte_size;
-        if(e.data_type==MICIUS_TENSOR_Q8_32_SCALE)scales+=e.byte_size;
-        else if(e.data_type==MICIUS_TENSOR_Q8_32_WEIGHT)weights+=e.byte_size;
-        else f32+=e.byte_size;
-    }
-    x<<"],\"shell_owned_buffers\":"<<ctx->managed_buffers.size()<<",\"shell_requested_bytes\":"<<bytes
-     <<",\"shell_public_scale_bytes\":"<<scales<<",\"shell_q8_weight_bytes\":"<<weights
-     <<",\"shell_f32_bytes\":"<<f32<<",\"released_public_scale_bytes\":"<<released;
-    micius::i22::Memory(phase,x.str());
-}
-
-#else
-static void I22Ledger(const char*, const ShellContext*, const std::vector<MiciusTensorEntryV1>&, size_t = 0) noexcept {}
 #endif
 
 static int CurrentProcessorForBenchmark() noexcept
@@ -213,7 +140,6 @@ MiciusShell::MiciusShell()
     ctx.active_model.assign("");
     ctx.should_exit = false;
     ctx.is_logging = false;
-    ctx.model_parser = nullptr;
 }
 
 MiciusShell::~MiciusShell()
@@ -222,30 +148,17 @@ MiciusShell::~MiciusShell()
         ctx.log_file.close();
     }
     
-    if (ctx.engine_ctx) {
-        Micius_DestroyEngine(ctx.engine_ctx);
-        ctx.engine_ctx = nullptr;
-    }
-
-    ClearManagedBuffers(&ctx);
-
-    if (ctx.model_parser) {
-        delete ctx.model_parser;
-        ctx.model_parser = nullptr;
-    }
+    ReleaseFile(&ctx);
 
     if (g_active_shell == this) g_active_shell = nullptr;
 }
 
-void MiciusShell::ClearManagedBuffers(ShellContext* ctx)
+void MiciusShell::ReleaseFile(ShellContext* ctx)
 {
-    for (void* ptr : ctx->managed_buffers) {
-        if (ptr) {
-            _mm_free(ptr);
-        }
-    }
-    ctx->managed_buffers.clear();
-    ctx->dynamic_tensor_names.clear();
+    Micius_CloseGGUFV1(ctx->file_model);
+    ctx->file_model = nullptr;
+    ctx->engine_ctx = nullptr;
+    ctx->engine_config = {};
 }
 
 void MiciusShell::InitConsole()
@@ -281,6 +194,10 @@ void MiciusShell::SetupEnvironment()
 //软中断信号回调
 void MiciusShell::SignalHandler(int signum)
 {
+#ifdef _WIN32
+    // The Windows CRT resets this disposition after delivering SIGINT.
+    if (signum==SIGINT) std::signal(SIGINT,MiciusShell::SignalHandler);
+#endif
     if (signum == SIGINT && g_active_shell != nullptr) {
         //写入中断标志而不是杀进程
         g_active_shell->ctx.is_interrupted.store(true, std::memory_order_relaxed);
@@ -292,15 +209,15 @@ void MiciusShell::BuildDictionaries()
     /*命令路由*/
     cmd_router.insert({"help", {"Show all available commands", CmdHelp}});
     cmd_router.insert({"exit", {"Terminate the runtime shell", CmdExit}});
-    cmd_router.insert({"quit", {"Terminate the runtime shell (alias)", CmdExit}});
     cmd_router.insert({"load", {"Load a GGUF model", CmdLoad}});
     cmd_router.insert({"stats", {"Show telemetry and hardware bounds", CmdStats}});
     cmd_router.insert({"debug", {"Debug underlying mechanics (e.g. debug workers)", CmdDebugWorkers}});
     cmd_router.insert({"clear", {"Clear the console screen", CmdClear}});
-    cmd_router.insert({"cls", {"Clear the console screen (alias)", CmdClear}});
     cmd_router.insert({"log", {"Archive session (usage: log start <file> | log stop)", CmdLog}});
     cmd_router.insert({"generate", {"Start model generation loop (Ctrl+C to interrupt)", CmdGenerate}});
-    cmd_router.insert({"run", {"Alias for generate", CmdGenerate}});
+#ifdef MICIUS_HAS_TEXT
+    cmd_router.insert({"chat", {"Chat in UTF-8 with the loaded model (chat [max_reply_tokens])", CmdChat}});
+#endif
 
     /*字符串字典*/
     msg_dict.insert({"err_no_engine", "\033[1;31m[Error]\033[0m Engine offline. Please load a model or sandbox first.\n"});
@@ -321,33 +238,100 @@ const std::string& MiciusShell::GetMsg(const std::string& key)
 std::string MiciusShell::StripANSI(const std::string& input)
 {
     std::string output;
-    bool in_escape = false;
-    for (char c : input) {
-        if (c == '\033') in_escape = true;
-        else if (in_escape) {
-            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) in_escape = false;
-        }
-        else output += c;
+    for (size_t i=0; i<input.size();) {
+        const auto c=static_cast<unsigned char>(input[i++]);
+        if (c==0x1b && i<input.size()) {
+            const char kind=input[i++];
+            if (kind=='[') {
+                while (i<input.size()) {
+                    const auto v=static_cast<unsigned char>(input[i++]);
+                    if (v>=0x40 && v<=0x7e) break;
+                }
+            } else if (kind==']') {
+                while (i<input.size()) {
+                    if (input[i++]=='\a') break;
+                    if (input[i-1]=='\033' && i<input.size() && input[i]=='\\') { ++i; break; }
+                }
+            }
+        } else if ((c>=32 && c!=127) || c=='\n' || c=='\t') output+=static_cast<char>(c);
     }
     return output;
+}
+
+void MiciusShell::LogText(const std::string& plain, bool flush)
+{
+    if (!ctx.is_logging) return;
+    ctx.log_file << plain;
+    if (flush) ctx.log_file.flush();
+    if (!ctx.log_file) {
+        ctx.is_logging=false;
+        ctx.log_file.close();
+        std::cerr << "[Log] Session log write failed; logging disabled.\n";
+    }
+}
+
+void MiciusShell::LogInput(const std::string& prompt, const std::string& line)
+{
+    if (ctx.is_logging) LogText(StripANSI(prompt+line)+"\n",true);
+}
+
+bool MiciusShell::ReadLine(std::string& line)
+{
+#ifdef _WIN32
+    // Windows console input is UTF-16. Mintty, redirected files and pipes
+    // supply UTF-8 bytes through stdin and take the ordinary getline path.
+    HANDLE handle=GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode=0;
+    if (GetConsoleMode(handle,&mode) && (mode&ENABLE_LINE_INPUT)) {
+        std::wstring wide;
+        for (;;) {
+            wchar_t chunk[512];
+            DWORD count=0;
+            if (!ReadConsoleW(handle,chunk,512,&count,nullptr) || !count) {
+                line.clear();
+                return ctx.is_interrupted.exchange(false);
+            }
+            wide.append(chunk,count);
+            if (wide.back()==L'\n') break;
+        }
+        wide.pop_back();
+        if (!wide.empty() && wide.back()==L'\r') wide.pop_back();
+        if (wide==L"\x1a") return false;
+        line.clear();
+        if (wide.empty()) return true;
+        const int n=wide.size()<=static_cast<size_t>(INT_MAX) ? static_cast<int>(wide.size()) : 0;
+        const int needed=WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,wide.data(),n,nullptr,0,nullptr,nullptr);
+        if (needed<=0) { ShellPrint("[Input] Invalid Unicode console line.\n"); return true; }
+        line.resize(static_cast<size_t>(needed));
+        if (!WideCharToMultiByte(CP_UTF8,WC_ERR_INVALID_CHARS,wide.data(),n,line.data(),needed,nullptr,nullptr)) {
+            line.clear(); ShellPrint("[Input] Could not read UTF-8 text.\n");
+        }
+        return true;
+    }
+#endif
+    return bool(std::getline(std::cin,line));
 }
 
 //Shell文本打印走这里
 void MiciusShell::ShellPrint(const std::string& msg)
 {
     std::cout << msg;
-    if (ctx.is_logging && ctx.log_file.is_open()) {
-        ctx.log_file << StripANSI(msg);
-        ctx.log_file.flush();
-    }
+    if (ctx.is_logging) LogText(StripANSI(msg),msg.find('\n')!=std::string::npos);
 }
 
 std::vector<std::string> MiciusShell::TokenizeInput(const std::string& input)
 {
     std::vector<std::string> tokens;
-    std::stringstream ss(input);
     std::string token;
-    while (ss >> token) tokens.push_back(token);
+    bool quoted=false, started=false;
+    for (char c:input) {
+        if (c=='"') { quoted=!quoted; started=true; }
+        else if (!quoted && (c==' ' || c=='\t' || c=='\r')) {
+            if (started) { tokens.push_back(token); token.clear(); started=false; }
+        } else { token+=c; started=true; }
+    }
+    if (quoted) throw std::invalid_argument("Unclosed double quote in command");
+    if (started) tokens.push_back(token);
     return tokens;
 }
 
@@ -357,16 +341,15 @@ void MiciusShell::RunREPL()
     while (!ctx.should_exit) {
         std::cout << "\033[1;36m" << ctx.prompt_text << "\033[0m" << std::flush;
         
-        if (!std::getline(std::cin, input_line)) break; 
+        if (!ReadLine(input_line)) break;
         if (input_line.empty()) continue;
         
         //如果开启了日志，原样存档用户输入的命令（清除提示符的颜色代码）
-        if (ctx.is_logging && ctx.log_file.is_open()) {
-            ctx.log_file << StripANSI(ctx.prompt_text) << input_line << "\n";
-            ctx.log_file.flush();
-        }
+        LogInput(ctx.prompt_text,input_line);
 
-        std::vector<std::string> args = TokenizeInput(input_line);
+        std::vector<std::string> args;
+        try { args=TokenizeInput(input_line); }
+        catch (const std::invalid_argument& e) { ShellPrint(std::string("[Error] ")+e.what()+"\n"); continue; }
         if (args.empty()) continue;
         
         const std::string& cmd_name = args[0];
@@ -380,26 +363,8 @@ void MiciusShell::RunREPL()
                 ShellPrint(
                     std::string("\033[1;31m[Error]\033[0m Command aborted by exception: ") +
                     error.what() + "\n");
-                if (ctx.engine_ctx) {
-                    Micius_DestroyEngine(ctx.engine_ctx);
-                    ctx.engine_ctx = nullptr;
-                }
-                ClearManagedBuffers(&ctx);
-                delete ctx.model_parser;
-                ctx.model_parser = nullptr;
-                ctx.active_model.clear();
-                ctx.prompt_text.assign("micius> ");
             } catch (...) {
                 ShellPrint("\033[1;31m[Error]\033[0m Command aborted by an unknown exception.\n");
-                if (ctx.engine_ctx) {
-                    Micius_DestroyEngine(ctx.engine_ctx);
-                    ctx.engine_ctx = nullptr;
-                }
-                ClearManagedBuffers(&ctx);
-                delete ctx.model_parser;
-                ctx.model_parser = nullptr;
-                ctx.active_model.clear();
-                ctx.prompt_text.assign("micius> ");
             }
         } else {
             ShellPrint(GetMsg("msg_unknown_cmd"));
@@ -543,8 +508,7 @@ int MiciusShell::RunModelBenchmark(const std::vector<std::string>& args)
         if (!PinBenchmarkThread(options.cpu_id, &load_cpu, &error)) return fail(error);
     }
     const auto load_begin = std::chrono::steady_clock::now();
-    CmdLoad(this, &ctx, std::vector<std::string>{"load", options.model_path});
-    if (!ctx.engine_ctx) return fail("model load or V1 tensor binding failed");
+    if (!LoadFile(options.model_path)) return fail("model load or V1 tensor binding failed");
 #if defined(MICIUS_I4_EVALUATION)
     if (i4_requested) {
         const int result=micius::i4::EvaluateTokens(ctx.engine_ctx,ctx.engine_config,options.i4_tokens,options.i4_output);
@@ -795,10 +759,11 @@ void MiciusShell::CmdLog(MiciusShell* shell, ShellContext* ctx, const std::vecto
     if (args.size() < 2) { shell->ShellPrint(shell->GetMsg("err_usage_log")); return; }
     
     if (args[1].compare("start") == 0) {
-        if (args.size() < 3) { shell->ShellPrint(shell->GetMsg("err_usage_log")); return; }
+        if (args.size() != 3 || args[2].empty()) { shell->ShellPrint(shell->GetMsg("err_usage_log")); return; }
         if (ctx->is_logging) { shell->ShellPrint("Logging is already active.\n"); return; }
         
-        ctx->log_file.open(args[2], std::ios::app);
+        ctx->log_file.clear();
+        ctx->log_file.open(micius::gguf::NativePath(std::filesystem::u8path(args[2])), std::ios::app);
         if (!ctx->log_file.is_open()) {
             shell->ShellPrint("\033[1;31m[Error]\033[0m Failed to open log file.\n");
         } else {
@@ -808,11 +773,11 @@ void MiciusShell::CmdLog(MiciusShell* shell, ShellContext* ctx, const std::vecto
             shell->ShellPrint(msg);
         }
     } 
-    else if (args[1].compare("stop") == 0) {
+    else if (args[1].compare("stop") == 0 && args.size()==2) {
         if (!ctx->is_logging) { shell->ShellPrint("Logging is not active.\n"); return; }
         ctx->log_file.close();
         ctx->is_logging = false;
-        shell->ShellPrint("[System] Archiving stopped.\n");
+        shell->ShellPrint(ctx->log_file.fail() ? "[Log] Session log close failed.\n" : "[System] Archiving stopped.\n");
     } 
     else { shell->ShellPrint(shell->GetMsg("err_usage_log")); }
 }
@@ -824,464 +789,52 @@ void MiciusShell::CmdExit(MiciusShell* shell, ShellContext* ctx, const std::vect
     ctx->should_exit = true;
 }
 
-void MiciusShell::CmdLoad(MiciusShell* shell, ShellContext* ctx, const std::vector<std::string>& args)
+bool MiciusShell::LoadFile(const std::string& filename, uint32_t context_length)
 {
-    if (args.size() < 2) {
-        shell->ShellPrint(shell->GetMsg("err_usage_load"));
-        return;
-    }
-    
-    std::string file_name = args[1];
-    std::filesystem::path target_path = std::filesystem::path(ctx->model_dir) / file_name;
-
-    std::string msg_parse;
-    msg_parse.assign("[Loader] Searching for ").append(target_path.string()).append("...\n");
-    shell->ShellPrint(msg_parse);
-
-    if (!std::filesystem::exists(target_path) && std::filesystem::exists(file_name)) {
-        target_path = file_name; 
-    }
-
-    if (!std::filesystem::exists(target_path)) {
-        shell->ShellPrint("\033[1;31m[Error]\033[0m Model file not found in models/ directory.\n");
-        return;
-    }
-
-    //重建运行态前先清空旧内存
-    if (ctx->engine_ctx) {
-        Micius_DestroyEngine(ctx->engine_ctx);
-        ctx->engine_ctx = nullptr;
-    }
-    if (ctx->model_parser) {
-        delete ctx->model_parser;
-        ctx->model_parser = nullptr;
-    }
-    ClearManagedBuffers(ctx);
-    ctx->active_model.clear();
-    ctx->prompt_text.assign("micius> ");
-    ctx->engine_config = MiciusConfig{};
-
-    GGUFParser* loader = nullptr;
-    try {
-        loader = new GGUFParser(target_path.string());
-    } catch (const std::exception& e) {
-        shell->ShellPrint(std::string("\033[1;31m[Error]\033[0m Failed to memory-map model: ") + e.what() + "\n");
-        return;
-    }
-
-    try {
-        if (!loader->ParseHeaders()) {
-            shell->ShellPrint("\033[1;31m[Error]\033[0m Unsupported or invalid GGUF v2/v3 file.\n");
-            delete loader;
-            return;
-        }
-    } catch (const std::exception& error) {
-        shell->ShellPrint(
-            std::string("\033[1;31m[Error]\033[0m Malformed GGUF metadata: ") +
-            error.what() + "\n");
-        delete loader;
-        return;
-    }
-
-    MiciusConfig config{};
-    if (!Micius_InitConfig(&config, sizeof(config))) {
-        shell->ShellPrint(
-            std::string("\033[1;31m[Error]\033[0m Failed to initialize engine config: ") +
-            Micius_GetLastError() + "\n");
-        delete loader;
-        return;
-    }
-    if (!loader->ExtractEngineConfig(config)) {
-        shell->ShellPrint("\033[1;31m[Error]\033[0m Failed to extract configuration parameters.\n");
-        delete loader;
-        return;
-    }
-
-    micius::i22::Memory("headers_mapped");
-    loader->PrintTopology();
-    ctx->engine_config = config;
-    ctx->model_parser = loader; 
-    ctx->engine_ctx = Micius_CreateEngineV1(
-        &ctx->engine_config,
-        sizeof(ctx->engine_config),
-        MICIUS_ABI_VERSION);
-
-    if (!ctx->engine_ctx) {
-        shell->ShellPrint(
-            std::string("\033[1;31m[Error]\033[0m Failed to instantiate Micius Engine: ") +
-            Micius_GetLastError() + "\n");
-        delete ctx->model_parser;
-        ctx->model_parser = nullptr;
-        return;
-    }
-
-    micius::i22::Memory("engine_allocated");
-    //解包GGUF并翻译为内核标准INT8权重格式
-    std::vector<MiciusTensorEntryV1> bridge_entries;
-    const auto& tensors = ctx->model_parser->GetTensors();
-    if (tensors.size() > (std::numeric_limits<size_t>::max() - 1U) / 2U) {
-        shell->ShellPrint("\033[1;31m[Error]\033[0m Tensor count exceeds host capacity.\n");
-        Micius_DestroyEngine(ctx->engine_ctx);
-        ctx->engine_ctx = nullptr;
-        delete ctx->model_parser;
-        ctx->model_parser = nullptr;
-        return;
-    }
-    const size_t staging_capacity = tensors.size() * 2U + 1U;
-    bridge_entries.reserve(staging_capacity);
-    // At most two managed allocations are created per tensor, plus the F32
-    // embedding view. Reserving first makes every later ownership handoff
-    // non-throwing and prevents an untracked aligned allocation.
-    ctx->managed_buffers.reserve(staging_capacity);
-    ctx->dynamic_tensor_names.reserve(tensors.size() + 1U);
-
-    bool translation_failed = false;
-    std::string translation_error;
-
-    for (const auto& t : tensors) {
-        const void* raw_data = ctx->model_parser->GetTensorData(t.offset);
-        if (!raw_data) {
-            translation_failed = true;
-            translation_error = "tensor offset is outside the GGUF data region for " + t.name;
-            break;
-        }
-        
-        if (t.name == "token_embd.weight") {
-            size_t num_elements = 0;
-            size_t fp32_bytes = 0;
-            if (t.n_dims != 2 || !GetTensorElementCount(t, &num_elements) ||
-                !CheckedProduct(num_elements, sizeof(float), &fp32_bytes)) {
-                translation_failed = true;
-                translation_error = "token embedding shape overflows the host address space";
-                break;
-            }
-            
-            //总是生成FP32版本供前向Embedding查表（改名为.f32）
-            float* f32_embd = static_cast<float*>(_mm_malloc(fp32_bytes, 64));
-            if (!f32_embd) {
-                translation_failed = true;
-                translation_error = "token embedding allocation failed";
-                break;
-            }
-            if (t.type == GGMLType::F32) {
-                std::memcpy(f32_embd, raw_data, fp32_bytes);
-            } else if (t.type == GGMLType::F16) {
-                const auto* f16_data = static_cast<const uint16_t*>(raw_data);
-                bool finite_embedding = true;
-                for (size_t i = 0; i < num_elements; ++i) {
-                    f32_embd[i] = MiciusTensorCodec::DecodeFloat16(f16_data[i]);
-                    finite_embedding = finite_embedding && std::isfinite(f32_embd[i]);
-                }
-                if (!finite_embedding) {
-                    _mm_free(f32_embd);
-                    translation_failed = true;
-                    translation_error = "F16 token embedding contains a non-finite value";
-                    break;
-                }
-            } else if (t.type == GGMLType::Q8_0) {
-                if (t.dimensions[0] > std::numeric_limits<size_t>::max() ||
-                    t.dimensions[1] > std::numeric_limits<size_t>::max() ||
-                    !MiciusTensorCodec::DequantizeGGUFQ8_0ToF32(
-                        raw_data,
-                        static_cast<size_t>(t.byte_size),
-                        static_cast<size_t>(t.dimensions[1]),
-                        static_cast<size_t>(t.dimensions[0]),
-                        f32_embd,
-                        num_elements)) {
-                    _mm_free(f32_embd);
-                    translation_failed = true;
-                    translation_error = "Q8_0 token embedding dequantization failed";
-                    break;
-                }
-            } else {
-                _mm_free(f32_embd);
-                translation_failed = true;
-                translation_error = "token embedding type is not supported by this checkpoint";
-                break;
-            }
-            
-            ctx->managed_buffers.push_back(f32_embd);
-            const uint64_t embedding_columns = t.dimensions[0];
-            const uint64_t embedding_rows = t.dimensions[1];
-            bridge_entries.push_back(MakeBridgeEntry(
-                "token_embd.weight.f32",
-                f32_embd,
-                fp32_bytes,
-                MICIUS_TENSOR_F32,
-                2,
-                embedding_rows,
-                embedding_columns,
-                static_cast<size_t>(embedding_columns) * sizeof(float)));
-
-            //对Q8_0生成INT8供可能的Tied LM Head复用
-            if (t.type == GGMLType::Q8_0) {
-                if (embedding_columns % 32U != 0 ||
-                    embedding_rows > std::numeric_limits<size_t>::max() ||
-                    embedding_columns > std::numeric_limits<size_t>::max()) {
-                    translation_failed = true;
-                    translation_error = "Q8_0 token embedding row shape is unsupported";
-                    break;
-                }
-                size_t num_engine_blocks = 0;
-                if (!CheckedProduct(
-                        static_cast<size_t>(embedding_rows),
-                        static_cast<size_t>(embedding_columns / 32U),
-                        &num_engine_blocks)) {
-                    translation_failed = true;
-                    translation_error = "token embedding block count overflows";
-                    break;
-                }
-                size_t scale_bytes = 0;
-                if (!CheckedProduct(num_engine_blocks, sizeof(ShellQuantDescriptor), &scale_bytes)) {
-                    translation_failed = true;
-                    translation_error = "token embedding scale allocation size overflows";
-                    break;
-                }
-                auto* w = static_cast<int8_t*>(_mm_malloc(num_elements, 64));
-                auto* s = static_cast<ShellQuantDescriptor*>(_mm_malloc(scale_bytes, 64));
-                if (!w || !s || !MiciusTensorCodec::ConvertGGUFQ8_0ToQ8_32(
-                        raw_data,
-                        static_cast<size_t>(t.byte_size),
-                        static_cast<size_t>(embedding_rows),
-                        static_cast<size_t>(embedding_columns),
-                        w,
-                        num_elements,
-                        s,
-                        num_engine_blocks)) {
-                    if (w) _mm_free(w);
-                    if (s) _mm_free(s);
-                    translation_failed = true;
-                    translation_error = "Q8_0 token embedding conversion failed";
-                    break;
-                }
-                ctx->managed_buffers.push_back(w);
-                ctx->managed_buffers.push_back(s);
-                bridge_entries.push_back(MakeBridgeEntry(
-                    t.name.c_str(),
-                    w,
-                    num_elements,
-                    MICIUS_TENSOR_Q8_32_WEIGHT,
-                    2,
-                    embedding_rows,
-                    embedding_columns,
-                    static_cast<size_t>(embedding_columns)));
-                ctx->dynamic_tensor_names.push_back("token_embd.scales");
-                bridge_entries.push_back(MakeBridgeEntry(
-                    ctx->dynamic_tensor_names.back().c_str(),
-                    s,
-                    scale_bytes,
-                    MICIUS_TENSOR_Q8_32_SCALE,
-                    2,
-                    embedding_rows,
-                    embedding_columns / 32U,
-                    static_cast<size_t>(embedding_columns / 32U) * sizeof(ShellQuantDescriptor)));
-            }
-            continue; 
-        }
-
-        if (t.type == GGMLType::Q8_0) {
-            size_t num_elements = 0;
-            if (t.n_dims != 2 || !GetTensorElementCount(t, &num_elements) ||
-                t.dimensions[0] % 32U != 0 ||
-                t.dimensions[0] > std::numeric_limits<size_t>::max() ||
-                t.dimensions[1] > std::numeric_limits<size_t>::max()) {
-                translation_failed = true;
-                translation_error = "Q8 tensor row shape is invalid for " + t.name;
-                break;
-            }
-
-            const size_t columns = static_cast<size_t>(t.dimensions[0]);
-            const size_t rows = static_cast<size_t>(t.dimensions[1]);
-            size_t num_engine_blocks = 0;
-            if (!CheckedProduct(rows, columns / 32U, &num_engine_blocks)) {
-                translation_failed = true;
-                translation_error = "Q8 block count overflows for " + t.name;
-                break;
-            }
-            size_t scale_bytes = 0;
-            if (!CheckedProduct(num_engine_blocks, sizeof(ShellQuantDescriptor), &scale_bytes)) {
-                translation_failed = true;
-                translation_error = "scale shape overflows for " + t.name;
-                break;
-            }
-            auto* w = static_cast<int8_t*>(_mm_malloc(num_elements, 64));
-            auto* s = static_cast<ShellQuantDescriptor*>(_mm_malloc(scale_bytes, 64));
-            if (!w || !s || !MiciusTensorCodec::ConvertGGUFQ8_0ToQ8_32(
-                    raw_data,
-                    static_cast<size_t>(t.byte_size),
-                    rows,
-                    columns,
-                    w,
-                    num_elements,
-                    s,
-                    num_engine_blocks)) {
-                if (w) _mm_free(w);
-                if (s) _mm_free(s);
-                translation_failed = true;
-                translation_error = "Q8_0 conversion failed for " + t.name;
-                break;
-            }
-            ctx->managed_buffers.push_back(w);
-            ctx->managed_buffers.push_back(s);
-
-            bridge_entries.push_back(MakeBridgeEntry(
-                t.name.c_str(),
-                w,
-                num_elements,
-                MICIUS_TENSOR_Q8_32_WEIGHT,
-                2,
-                rows,
-                columns,
-                columns));
-
-            std::string weight_name = t.name;
-            std::string scale_name;
-            size_t last_dot = weight_name.find_last_of('.');
-            if (last_dot != std::string::npos && weight_name.substr(last_dot) == ".weight") {
-                scale_name = weight_name.substr(0, last_dot) + ".scales";
-            } else {
-                scale_name = weight_name + ".scales";
-            }
-
-            ctx->dynamic_tensor_names.push_back(scale_name);
-            bridge_entries.push_back(MakeBridgeEntry(
-                ctx->dynamic_tensor_names.back().c_str(),
-                s,
-                scale_bytes,
-                MICIUS_TENSOR_Q8_32_SCALE,
-                2,
-                rows,
-                columns / 32U,
-                columns / 32U * sizeof(ShellQuantDescriptor)));
-        } 
-        else if (t.type == GGMLType::F32) {
-            if (t.n_dims == 1) {
-                bridge_entries.push_back(MakeBridgeEntry(
-                    t.name.c_str(),
-                    raw_data,
-                    static_cast<size_t>(t.byte_size),
-                    MICIUS_TENSOR_F32,
-                    1,
-                    t.dimensions[0],
-                    0,
-                    0));
-            } else if (t.n_dims == 2 &&
-                       t.dimensions[0] <= std::numeric_limits<size_t>::max()) {
-                bridge_entries.push_back(MakeBridgeEntry(
-                    t.name.c_str(),
-                    raw_data,
-                    static_cast<size_t>(t.byte_size),
-                    MICIUS_TENSOR_F32,
-                    2,
-                    t.dimensions[1],
-                    t.dimensions[0],
-                    static_cast<size_t>(t.dimensions[0]) * sizeof(float)));
-            } else {
-                translation_failed = true;
-                translation_error = "F32 tensor rank is unsupported for " + t.name;
-                break;
-            }
-        } else if (t.type == GGMLType::F16 && t.n_dims == 1) {
-            size_t num_elements = 0;
-            size_t fp32_bytes = 0;
-            if (!GetTensorElementCount(t, &num_elements) ||
-                !CheckedProduct(num_elements, sizeof(float), &fp32_bytes)) {
-                translation_failed = true;
-                translation_error = "F16 vector shape overflows for " + t.name;
-                break;
-            }
-            auto* converted = static_cast<float*>(_mm_malloc(fp32_bytes, 64));
-            if (!converted) {
-                translation_failed = true;
-                translation_error = "F16 vector allocation failed for " + t.name;
-                break;
-            }
-            const auto* source = static_cast<const uint16_t*>(raw_data);
-            bool finite_vector = true;
-            for (size_t i = 0; i < num_elements; ++i) {
-                converted[i] = MiciusTensorCodec::DecodeFloat16(source[i]);
-                finite_vector = finite_vector && std::isfinite(converted[i]);
-            }
-            if (!finite_vector) {
-                _mm_free(converted);
-                translation_failed = true;
-                translation_error = "F16 vector contains a non-finite value for " + t.name;
-                break;
-            }
-            ctx->managed_buffers.push_back(converted);
-            bridge_entries.push_back(MakeBridgeEntry(
-                t.name.c_str(),
-                converted,
-                fp32_bytes,
-                MICIUS_TENSOR_F32,
-                1,
-                t.dimensions[0],
-                0,
-                0));
-        } else {
-            translation_failed = true;
-            translation_error = "tensor type/rank is unsupported for " + t.name;
-            break;
-        }
-    }
-
-    if (translation_failed || bridge_entries.size() > std::numeric_limits<uint32_t>::max()) {
-        shell->ShellPrint(
-            std::string("\033[1;31m[Error]\033[0m Model translation aborted: ") +
-            (translation_error.empty() ? "tensor entry count exceeds the ABI" : translation_error) +
-            "\n");
-        Micius_DestroyEngine(ctx->engine_ctx);
-        ctx->engine_ctx = nullptr;
-        ClearManagedBuffers(ctx);
-        delete ctx->model_parser;
-        ctx->model_parser = nullptr;
-        return;
-    }
-
-    I22Ledger("translated_before_bind",ctx,bridge_entries);
-    if (!Micius_BindModelTensorsV1(
-            ctx->engine_ctx,
-            bridge_entries.data(),
-            static_cast<uint32_t>(bridge_entries.size()),
-            sizeof(MiciusTensorEntryV1),
-            MICIUS_ABI_VERSION)) {
-        shell->ShellPrint(
-            std::string("\033[1;31m[Error]\033[0m Tensor binding rejected: ") +
-            Micius_GetLastError() + "\n");
-        Micius_DestroyEngine(ctx->engine_ctx);
-        ctx->engine_ctx = nullptr;
-        ClearManagedBuffers(ctx);
-        delete ctx->model_parser;
-        ctx->model_parser = nullptr;
-        return;
-    }
-
-    I22Ledger("bound_before_cleanup",ctx,bridge_entries);
-    size_t released_public_scales=0;
-#if defined(MICIUS_I22_RELEASE_LOADER_SCALES)
-    micius::i22::ReleaseStats released;
-    if(!micius::i22::ReleasePublicScales(ctx->managed_buffers,bridge_entries,released))
-        throw std::runtime_error("I22 loader ownership contract failed");
-    released_public_scales=released.bytes;
+    namespace fs = std::filesystem;
+    auto path = fs::u8path(ctx.model_dir) / fs::u8path(filename);
+    if (!fs::exists(path)) path = fs::u8path(filename);
+    const auto utf8 = path.u8string();
+    const std::string utf8_path(utf8.begin(),utf8.end());
+    const MiciusGGUFParserV1* parsers[] = {
+#if defined(MICIUS_LINK_LLAMA)
+        Micius_LlamaParserV1(),
 #endif
-    size_t retired_weights=0;
-    if(!micius::i25::ReleaseWeights(ctx->managed_buffers,bridge_entries,
-        micius::i25::RetirableWeights(ctx->engine_ctx),retired_weights))
-        throw std::runtime_error("I25 weight retirement ownership mismatch");
-    I22Ledger("bound_after_cleanup",ctx,bridge_entries,released_public_scales);
-
-    size_t last_dot = file_name.find_last_of('.');
-    std::string model_name = (last_dot == std::string::npos) ? file_name : file_name.substr(0, last_dot);
-    
-    ctx->active_model.assign(model_name);
-    ctx->prompt_text.assign(model_name).append("> ");
-    
-    std::string msg_mount;
-    msg_mount.assign("[Loader] \033[1;32m").append(model_name).append("\033[0m securely bound to Engine.\n");
-    shell->ShellPrint(msg_mount);
+#if defined(MICIUS_LINK_QWEN2)
+        Micius_Qwen2ParserV1(),
+#endif
+    };
+    const char* cache_root = std::getenv("MICIUS_CACHE_ROOT");
+    MiciusGGUFOpenOptionsV1 o{MICIUS_GGUF_FILE_ABI,sizeof(o),utf8_path.c_str(),
+        cache_root ? cache_root : ".micius-cache",parsers,static_cast<uint32_t>(std::size(parsers)),context_length};
+    char diagnostic[512]{};
+    std::unique_ptr<MiciusFileModel, decltype(&Micius_CloseGGUFV1)> next(
+        Micius_OpenGGUFV1(&o,diagnostic,sizeof(diagnostic)),Micius_CloseGGUFV1);
+    if (!next) {
+        ShellPrint(std::string("[Error] Model load failed: ") + diagnostic + "\n");
+        return false;
+    }
+    const auto stem = path.stem().u8string();
+    std::string name(stem.begin(),stem.end());
+    std::string prompt = name + "> ";
+    const std::string message = "[Loader] " + name + " securely bound to Engine.\narchitecture=" +
+        Micius_FileArchitectureV1(next.get()) + "\ncontext_directory=" + Micius_FileContextDirectoryV1(next.get()) + "\n";
+    ReleaseFile(&ctx);
+    ctx.file_model = next.release();
+    ctx.engine_ctx = Micius_FileEngineV1(ctx.file_model);
+    ctx.engine_config = *Micius_FileConfigV1(ctx.file_model);
+    ctx.active_model.swap(name);
+    ctx.prompt_text.swap(prompt);
+    ShellPrint(message);
+    return true;
 }
 
-//引入Prompt Prefill和可控采样机制
+void MiciusShell::CmdLoad(MiciusShell* shell, ShellContext*, const std::vector<std::string>& args)
+{
+    if (args.size() != 2) { shell->ShellPrint(shell->GetMsg("err_usage_load")); return; }
+    shell->LoadFile(args[1]);
+}
+
 void MiciusShell::CmdGenerate(MiciusShell* shell, ShellContext* ctx, const std::vector<std::string>& args)
 {
     if (!ctx->engine_ctx) {

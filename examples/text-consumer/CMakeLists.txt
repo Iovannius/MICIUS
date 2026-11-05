@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.21)
+project(MiciusTextConsumer LANGUAGES C CXX)
+find_package(MICIUS 0.7.1 CONFIG REQUIRED COMPONENTS text)
+add_executable(m2_token_probe token_probe.c)
+set_target_properties(m2_token_probe PROPERTIES C_STANDARD 11 LINKER_LANGUAGE CXX)
+target_link_libraries(m2_token_probe PRIVATE MICIUS::text)

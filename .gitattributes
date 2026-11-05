@@ -1,0 +1,4 @@
+RELEASE-MANIFEST.json text eol=lf
+src/app/MICIUS.txt -text
+validation/**/*.json text eol=lf
+*.zlib binary

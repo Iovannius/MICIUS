@@ -8,7 +8,7 @@
   "configurePresets": [
     {
       "name": "int8-release-windows",
-      "displayName": "v0.7 INT8 (Windows Clang64, AVX2 without VNNI)",
+      "displayName": "v0.7.1 INT8 (Windows Clang64, AVX2 without VNNI)",
       "inherits": "f64-reference-windows",
       "binaryDir": "${sourceDir}/build-int8-release",
       "cacheVariables": {
@@ -23,6 +23,7 @@
       "binaryDir": "${sourceDir}/build-f64-reference",
       "cacheVariables": {
         "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
         "CMAKE_BUILD_TYPE": "Release",
         "ARCH": "native",
         "ALIGN": "32",

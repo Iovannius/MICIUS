@@ -133,11 +133,11 @@ bool ValidateConfig(const MiciusConfig& config) noexcept
         return false;
     }
 
-    const uint64_t ffn_capacity = static_cast<uint64_t>(config.hidden_dim) * 4U;
-    if (config.intermediate_dim > ffn_capacity) {
-        SetError(
-            MICIUS_ERROR_INVALID_ARGUMENT,
-            "intermediate_dim exceeds the current checked workspace capacity (4 * hidden_dim)");
+    // The authoritative path allocates gate/up at the declared FFN width.
+    // A four-times-hidden cap belongs only to the dormant worker workspace.
+    size_t workspace_bytes = 0;
+    if (!CheckedProduct(std::max(config.hidden_dim, config.intermediate_dim), sizeof(double), &workspace_bytes)) {
+        SetError(MICIUS_ERROR_INVALID_ARGUMENT, "reference FFN workspace exceeds size_t");
         return false;
     }
 
@@ -324,12 +324,14 @@ bool Micius_BindModelTensors(
     return false;
 }
 
-bool Micius_BindModelTensorsV1(
+} // extern "C"
+
+bool micius::internal::BindTypedTensors(
     MiciusContext* context,
     const MiciusTensorEntryV1* entries,
     uint32_t count,
     size_t entry_size,
-    uint32_t abi_version)
+    uint32_t abi_version, ProjectionSemantics semantics)
 {
     static_assert(sizeof(MiciusQ8Block32Scale) == sizeof(QuantDescriptor));
     if (abi_version != MICIUS_ABI_VERSION) {
@@ -373,7 +375,7 @@ bool Micius_BindModelTensorsV1(
         std::vector<AIEngineFront::OwnedScaleBuffer> scale_buffers;
         std::vector<std::string> validated_names;
         const size_t required_capacity =
-            static_cast<size_t>(context->config.num_layers) * 16U + 8U;
+            static_cast<size_t>(context->config.num_layers) * 19U + 8U;
         legacy_entries.reserve(required_capacity);
         validated_names.reserve(required_capacity);
         scale_buffers.reserve(static_cast<size_t>(context->config.num_layers) * 7U + 2U);
@@ -559,6 +561,10 @@ bool Micius_BindModelTensorsV1(
 
         for (uint32_t layer = 0; layer < context->config.num_layers; ++layer) {
             const std::string prefix = "blk." + std::to_string(layer) + ".";
+            if (semantics.qkv_bias &&
+                (!require_tensor(prefix + "attn_q.bias", MICIUS_TENSOR_F32, hidden, 0) ||
+                 !require_tensor(prefix + "attn_k.bias", MICIUS_TENSOR_F32, kv_dimension, 0) ||
+                 !require_tensor(prefix + "attn_v.bias", MICIUS_TENSOR_F32, kv_dimension, 0))) return false;
             if (!require_tensor(prefix + "attn_q.weight", MICIUS_TENSOR_Q8_32_WEIGHT, hidden, hidden) ||
                 !require_tensor(prefix + "attn_q.scales", MICIUS_TENSOR_Q8_32_SCALE, hidden, hidden_blocks) ||
                 !require_tensor(prefix + "attn_k.weight", MICIUS_TENSOR_Q8_32_WEIGHT, kv_dimension, hidden) ||
@@ -586,7 +592,7 @@ bool Micius_BindModelTensorsV1(
         if (!context->core_engine->BindValidatedTensors(
                 legacy_entries.data(),
                 static_cast<uint32_t>(legacy_entries.size()),
-                std::move(scale_buffers))) {
+                std::move(scale_buffers), semantics.split_half_rope)) {
             SetError(MICIUS_ERROR_INVALID_MODEL_DATA, "core rejected the validated tensor set");
             return false;
         }
@@ -600,6 +606,18 @@ bool Micius_BindModelTensorsV1(
         SetError(MICIUS_ERROR_INTERNAL, "unknown exception while binding V1 tensors");
     }
     return false;
+}
+
+extern "C" {
+
+bool Micius_BindModelTensorsV1(
+    MiciusContext* context,
+    const MiciusTensorEntryV1* entries,
+    uint32_t count,
+    size_t entry_size,
+    uint32_t abi_version)
+{
+    return micius::internal::BindTypedTensors(context, entries, count, entry_size, abi_version, {false, false});
 }
 
 void Micius_DestroyEngine(MiciusContext* context)

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../micius_runtime.h"
-#include "MiciusGGUFParser.h"
+#include "micius_gguf.h"
 
 #include <string>
 #include <vector>
@@ -31,12 +31,7 @@ struct ShellContext {
     MiciusConfig engine_config{};            //当前挂载引擎的配置参数
     std::atomic<bool> is_interrupted{false}; //软中断安全标志
 
-    //管理解包后的权重，保证借用这些指针的引擎先于缓冲区销毁。
-    std::vector<void*> managed_buffers;
-    std::vector<std::string> dynamic_tensor_names; //维持字符串生命周期供C-ABI传递
-    
-    //持有解析器的生命周期，保证mmap映射指针有效
-    GGUFParser* model_parser = nullptr;
+    MiciusFileModel* file_model = nullptr; // owns engine_ctx and its mapped weights
 
 };
 
@@ -68,7 +63,15 @@ private:
     std::vector<std::string> TokenizeInput(const std::string& input);
 
     //释放由Shell管理的动态内存池
-    static void ClearManagedBuffers(ShellContext* ctx);
+    static void ReleaseFile(ShellContext* ctx);
+    bool LoadFile(const std::string& filename, uint32_t context_length = 0);
+    void LogText(const std::string& plain, bool flush);
+    void LogInput(const std::string& prompt, const std::string& line);
+    bool ReadLine(std::string& line);
+#ifdef MICIUS_HAS_TEXT
+    static void CmdChat(MiciusShell*, ShellContext*, const std::vector<std::string>&);
+    int ChatLoop(uint32_t max_new, bool trace = false);
+#endif
 
     //过滤器，去除控制字符与彩色字符
     std::string StripANSI(const std::string& input);
@@ -98,6 +101,9 @@ public:
 
     //交互主循环
     void RunREPL();
+#ifdef MICIUS_HAS_TEXT
+    int RunChat(const std::vector<std::string>& args);
+#endif
 
     // Non-interactive real-model timing entry. Model parsing, tensor conversion,
     // binding, reset, prompt ingestion and warmup remain outside the timed ROI.

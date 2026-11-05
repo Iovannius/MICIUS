@@ -1,12 +1,14 @@
 #pragma once
 
-#include "../micius_runtime.h"
+#include "micius_gguf.h"
+#include <unordered_set>
 
 #include <string>
 #include <vector>
 #include <unordered_map>
 #include <cstdint>
 #include <stdexcept>
+#include <string_view>
 
 constexpr uint32_t GGUF_MAGIC = 0x46554747;
 
@@ -60,10 +62,14 @@ private:
     std::unordered_map<std::string, uint64_t> kv_uint64s;
     std::unordered_map<std::string, double> kv_floats;
 
+    std::unordered_set<std::string> metadata_names;
     std::vector<GGUFTensorInfo> tensors;
 
     //模型原生词表数组
     std::vector<std::string> vocab_strings;
+    // Keep borrowed array records so numeric-only sessions need no merge table.
+    std::string_view merges_record, types_record;
+    std::unordered_map<std::string, uint8_t> tokenizer_flags;
 
     //解析二进制流的辅助探针
     void ReadBytes(void* dst, size_t len);
@@ -76,12 +82,23 @@ private:
 public:
     GGUFParser(const std::string& path);
     ~GGUFParser();
+    GGUFParser(const GGUFParser&) = delete;
+    GGUFParser& operator=(const GGUFParser&) = delete;
 
     //解析头部与KV字典
     bool ParseHeaders();
 
     //将字典转译为引擎所需的配置
-    bool ExtractEngineConfig(MiciusConfig& out_config);
+    const std::string& Architecture() const;
+    bool Describe(const MiciusGGUFParserV1& parser, MiciusGGUFPlanV1& plan) const;
+    void MapTensors(const MiciusGGUFParserV1& parser, const MiciusGGUFPlanV1& plan);
+    const void* FileData() const noexcept { return mmap_addr; }
+    size_t FileSize() const noexcept { return file_size; }
+    std::string_view TextString(const char* key) const;
+    uint32_t TextUint(const char* key) const;
+    bool TextFlag(const char* key) const;
+    std::string_view MergesRecord() const { return merges_record; }
+    std::string_view TypesRecord() const { return types_record; }
 
     //获取张量元数据表，供外壳构建C-ABI桥接数组
     const std::vector<GGUFTensorInfo>& GetTensors() const

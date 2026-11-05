@@ -1,8 +1,12 @@
-# 当前状态 · v0.7
+# 当前状态 · v0.7.1
+
+当前发布支持 Llama 和 Qwen2 架构模块，两款已验收的 Instruct GGUF 均可在 INT8、F64 后端进行短文字对话。会话在内存中连续使用 KV，退出时结束。可读日志可以保存到文件；磁盘 KV 快照与恢复排在 v0.7.2。[v0.7.1 功能和实机证据](RELEASE_0_7_1.md) · [M1 模块与 ABI](M1-MODULES-AND-ABI.md) · [M2 文字对话与日志](M2-TEXT-CHAT.md)
+
+## v0.7 数值与性能基线（历史）
 
 2026-11-01 的首个 INT8 版本以 I25-P1 验收通过的实现为基础。发布入口为 `int8-release-windows`，F64 对照入口为 `f64-reference-windows`。公共 V1 ABI 为 `0x00060003`。
 
-| 项目 | 发布状态 |
+| 项目 | v0.7 当时的发布状态 |
 |---|---|
 | GGUF 输入 | v2/v3，受支持的 Llama 架构及 Q8_0 张量。目标机验收使用 SmolLM2-360M-Instruct-Q8_0 |
 | 输入与输出 | 显式 token ID，逐 token prefill、greedy decode、F32 logits 和 K/V 复制 |

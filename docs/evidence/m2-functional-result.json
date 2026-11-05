@@ -1,0 +1,180 @@
+{
+  "status": "TEXT_CHAT_FUNCTIONAL_PASS",
+  "scope": "Fixed UTF-8 dialogs, history and reset replay",
+  "prepared_sha256": "f42cc3b5b07e422ed028e23f5e27bb2c8b9fa73e2bd9662728d119a2fea2e57d",
+  "protocol_sha256": "90caf07bb56d7c12a997d4dfbb81a4b210df4f7a2c6c6ba329f104605053a813",
+  "checks": {
+    "INT8-smol": {
+      "model_sha256": "48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201",
+      "vocabulary": {
+        "ordinary": {
+          "sha256": "d84c6af12e32ecb9d6f989ea5b79a18fdcb41451aeab411bd56493ae76fcc2d4",
+          "tokens": 5800
+        },
+        "first": {
+          "sha256": "a7b1c061c901e0bec11089374611c55d983c31ad734ce8217521a8c5193fa5be",
+          "tokens": 38
+        },
+        "next": {
+          "sha256": "3b6559c9aa50cdcb6a1396df432d271010a04d3e65e1fcc754b42c2f3f39a271",
+          "tokens": 34
+        }
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "finish": "eot",
+          "generated_tokens": 2,
+          "context": 42,
+          "text": "Blue.",
+          "utf8_sha256": "2ae2753e675230921e42e120216ac40fad09202a0632543e238a36ef72500708"
+        },
+        {
+          "turn": 2,
+          "finish": "eot",
+          "generated_tokens": 2,
+          "context": 80,
+          "text": "Blue.",
+          "utf8_sha256": "2ae2753e675230921e42e120216ac40fad09202a0632543e238a36ef72500708"
+        },
+        {
+          "turn": 1,
+          "finish": "eot",
+          "generated_tokens": 2,
+          "context": 42,
+          "text": "Blue.",
+          "utf8_sha256": "2ae2753e675230921e42e120216ac40fad09202a0632543e238a36ef72500708"
+        }
+      ]
+    },
+    "INT8-qwen": {
+      "model_sha256": "d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8",
+      "vocabulary": {
+        "ordinary": {
+          "sha256": "cd573182bee768a98c82f5eba4eba7e040b5a037d40b6380f2cac1eeb154272e",
+          "tokens": 4125
+        },
+        "first": {
+          "sha256": "9800fd2b0f7a8134b5a13f2fb946d72b2bb5da688063595c30e44de75cffbfd4",
+          "tokens": 36
+        },
+        "next": {
+          "sha256": "4d76bae7176cd8a8e9453b20c95804f6df3c86d9705fb601bba8873d9472ba6b",
+          "tokens": 18
+        }
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "finish": "eot",
+          "generated_tokens": 1,
+          "context": 39,
+          "text": "Blue",
+          "utf8_sha256": "ec7d56a01607001e6401366417c5e2eb00ffa0df17ca1a9a831e0b32c8f11bf7"
+        },
+        {
+          "turn": 2,
+          "finish": "eot",
+          "generated_tokens": 1,
+          "context": 60,
+          "text": "Blue",
+          "utf8_sha256": "ec7d56a01607001e6401366417c5e2eb00ffa0df17ca1a9a831e0b32c8f11bf7"
+        },
+        {
+          "turn": 1,
+          "finish": "eot",
+          "generated_tokens": 1,
+          "context": 39,
+          "text": "Blue",
+          "utf8_sha256": "ec7d56a01607001e6401366417c5e2eb00ffa0df17ca1a9a831e0b32c8f11bf7"
+        }
+      ]
+    },
+    "F64-smol": {
+      "model_sha256": "48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201",
+      "vocabulary": {
+        "ordinary": {
+          "sha256": "d84c6af12e32ecb9d6f989ea5b79a18fdcb41451aeab411bd56493ae76fcc2d4",
+          "tokens": 5800
+        },
+        "first": {
+          "sha256": "a7b1c061c901e0bec11089374611c55d983c31ad734ce8217521a8c5193fa5be",
+          "tokens": 38
+        },
+        "next": {
+          "sha256": "3b6559c9aa50cdcb6a1396df432d271010a04d3e65e1fcc754b42c2f3f39a271",
+          "tokens": 34
+        }
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "finish": "eot",
+          "generated_tokens": 2,
+          "context": 42,
+          "text": "Blue.",
+          "utf8_sha256": "2ae2753e675230921e42e120216ac40fad09202a0632543e238a36ef72500708"
+        },
+        {
+          "turn": 2,
+          "finish": "eot",
+          "generated_tokens": 2,
+          "context": 80,
+          "text": "Blue.",
+          "utf8_sha256": "2ae2753e675230921e42e120216ac40fad09202a0632543e238a36ef72500708"
+        },
+        {
+          "turn": 1,
+          "finish": "eot",
+          "generated_tokens": 2,
+          "context": 42,
+          "text": "Blue.",
+          "utf8_sha256": "2ae2753e675230921e42e120216ac40fad09202a0632543e238a36ef72500708"
+        }
+      ]
+    },
+    "F64-qwen": {
+      "model_sha256": "d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8",
+      "vocabulary": {
+        "ordinary": {
+          "sha256": "cd573182bee768a98c82f5eba4eba7e040b5a037d40b6380f2cac1eeb154272e",
+          "tokens": 4125
+        },
+        "first": {
+          "sha256": "9800fd2b0f7a8134b5a13f2fb946d72b2bb5da688063595c30e44de75cffbfd4",
+          "tokens": 36
+        },
+        "next": {
+          "sha256": "4d76bae7176cd8a8e9453b20c95804f6df3c86d9705fb601bba8873d9472ba6b",
+          "tokens": 18
+        }
+      },
+      "turns": [
+        {
+          "turn": 1,
+          "finish": "eot",
+          "generated_tokens": 1,
+          "context": 39,
+          "text": "Blue",
+          "utf8_sha256": "ec7d56a01607001e6401366417c5e2eb00ffa0df17ca1a9a831e0b32c8f11bf7"
+        },
+        {
+          "turn": 2,
+          "finish": "eot",
+          "generated_tokens": 1,
+          "context": 60,
+          "text": "Blue",
+          "utf8_sha256": "ec7d56a01607001e6401366417c5e2eb00ffa0df17ca1a9a831e0b32c8f11bf7"
+        },
+        {
+          "turn": 1,
+          "finish": "eot",
+          "generated_tokens": 1,
+          "context": 39,
+          "text": "Blue",
+          "utf8_sha256": "ec7d56a01607001e6401366417c5e2eb00ffa0df17ca1a9a831e0b32c8f11bf7"
+        }
+      ]
+    }
+  }
+}

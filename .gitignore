@@ -34,3 +34,9 @@ experiments/
 
 /build-*/
 __pycache__/
+
+# File-backed session directories
+.micius-cache/
+
+/results/
+/exports/

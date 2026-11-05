@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <immintrin.h>
 
 namespace micius {
@@ -23,44 +24,45 @@ uint64_t AILoggerCore::GetFastNanoTime()
     return std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
 }
 
-void AILoggerCore::Start(int shadow_core_id, const char* log_file_path)
+bool AILoggerCore::Start(int shadow_core_id, const char* log_file_path)
 {
-    if (!log_file_path || log_file_path[0] == '\0') return;
-    if (!daemon_state_) {
-        daemon_state_ = new DaemonState();
-    }
-    
-    if (daemon_state_->is_running.exchange(true)) return;
-
-    daemon_state_->shadow_core_id = shadow_core_id;
-    daemon_state_->log_file = std::fopen(log_file_path, "a");
-    if (daemon_state_->log_file) {
-        //2MB全缓冲
-        static char io_buffer[2 * 1024 * 1024];
-        std::setvbuf(daemon_state_->log_file, io_buffer, _IOFBF, sizeof(io_buffer));
-    }
+    std::lock_guard lock(lifecycle_);
+    if (!log_file_path || !*log_file_path || daemon_state_) return false;
+    auto state = std::make_unique<DaemonState>();
+    state->log_file = std::fopen(log_file_path, "a");
+    if (!state->log_file) return false;
+    static char io_buffer[2 * 1024 * 1024];
+    std::setvbuf(state->log_file,io_buffer,_IOFBF,sizeof(io_buffer));
+    state->shadow_core_id = shadow_core_id;
+    state->is_running.store(true);
+    daemon_state_ = state.release();
 
     try {
         daemon_state_->daemon_thread = std::thread(&AILoggerCore::BackendDaemonLoop, this);
     } catch (...) {
-        daemon_state_->is_running.store(false, std::memory_order_release);
-        if (daemon_state_->log_file) {
-            std::fclose(daemon_state_->log_file);
-            daemon_state_->log_file = nullptr;
-        }
+        std::fclose(daemon_state_->log_file);
+        delete daemon_state_;
+        daemon_state_=nullptr;
         throw;
     }
+    dropped_.store(0,std::memory_order_relaxed);
+    publishers_.store(0,std::memory_order_release);
+    return true;
 }
 
 void AILoggerCore::Stop()
 {
+    std::lock_guard lock(lifecycle_);
     if (!daemon_state_) return;
-
+    publishers_.fetch_or(closed_,std::memory_order_acq_rel);
+    while (publishers_.load(std::memory_order_acquire)!=closed_) std::this_thread::yield();
     daemon_state_->is_running.store(false, std::memory_order_release);
     if (daemon_state_->daemon_thread.joinable()) {
         daemon_state_->daemon_thread.join();
     }
     if (daemon_state_->log_file) {
+        const auto lost=dropped_.load(std::memory_order_relaxed);
+        if (lost) std::fprintf(daemon_state_->log_file,"[WRN] dropped_events=%llu\n",static_cast<unsigned long long>(lost));
         std::fflush(daemon_state_->log_file);
         std::fclose(daemon_state_->log_file);
         daemon_state_->log_file = nullptr;
@@ -88,7 +90,9 @@ void AILoggerCore::BackendDaemonLoop()
             FormatAndFlush(event);
         } else {
             //队列为空且收到停止信号时退出
-            if (!daemon_state_->is_running.load(std::memory_order_relaxed)) {
+            if (!daemon_state_->is_running.load(std::memory_order_acquire)) {
+                // A producer can publish between the empty read and the stop.
+                while (queue_.Dequeue(event)) FormatAndFlush(event);
                 break; 
             }
             /*Hybrid Backoff*/
@@ -140,14 +144,14 @@ void AILoggerCore::FormatAndFlush(const LogEvent& event)
             //根据保存的TypeTag格式化
             char arg_str[64];
             const ArgType type = arg_idx < 3
-                ? static_cast<ArgType>(event.padding[arg_idx])
+                ? event.types[arg_idx]
                 : ArgType::NONE;
             if (type == ArgType::FLOAT64) {
-                std::snprintf(arg_str, sizeof(arg_str), "%f", event.payload.f64_args[arg_idx]);
+                std::snprintf(arg_str, sizeof(arg_str), "%f", event.payload[arg_idx].f64);
             } else if (type == ArgType::INT64) {
-                std::snprintf(arg_str, sizeof(arg_str), "%lld", (long long)event.payload.i64_args[arg_idx]);
+                std::snprintf(arg_str, sizeof(arg_str), "%lld", (long long)event.payload[arg_idx].i64);
             } else if (type == ArgType::UINT64) {
-                std::snprintf(arg_str, sizeof(arg_str), "%llu", (unsigned long long)event.payload.u64_args[arg_idx]);
+                std::snprintf(arg_str, sizeof(arg_str), "%llu", (unsigned long long)event.payload[arg_idx].u64);
             } else {
                 std::snprintf(arg_str, sizeof(arg_str), "%s", "<missing>");
             }

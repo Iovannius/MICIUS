@@ -80,19 +80,15 @@ int MiciusShell::RunI6Benchmark(const std::vector<std::string>& args) {
         const bool observe=mode=="resource" || mode=="lifecycle";
         if(observe) {resources.open(out/"resources.jsonl",std::ios::binary);Need(bool(resources),"resource file failed");Memory(resources,"before_load",0);}
         auto release=[&]() {
-            if(ctx.engine_ctx) {Micius_DestroyEngine(ctx.engine_ctx);ctx.engine_ctx=nullptr;}
-            ClearManagedBuffers(&ctx);
-            if(ctx.model_parser) {delete ctx.model_parser;ctx.model_parser=nullptr;}
-            Need(!ctx.engine_ctx && !ctx.model_parser && ctx.managed_buffers.empty() && ctx.dynamic_tensor_names.empty(),"ownership remained after release");
+            ReleaseFile(&ctx);
+            Need(!ctx.engine_ctx && !ctx.file_model,"file session remained after release");
         };
         auto load=[&]() {
-            const auto t=Clock::now();CmdLoad(this,&ctx,{"load",options.at("--model")});
+            const auto t=Clock::now();Need(LoadFile(options.at("--model")),"load/bind failed");
             const double seconds=Seconds(t,Clock::now());Need(ctx.engine_ctx!=nullptr,"load/bind failed");
             const auto stats=micius::internal::GetPreparedWeightStats(ctx.engine_ctx);
             Need(stats.selection==0 && stats.extra_bytes==0 && stats.matrices==0,"unexpected weight shadow");
             Need(Micius_GetWorkerCount(ctx.engine_ctx)==0,"reference workload must have zero workers");
-            for(const auto& old:micius::i25::RetirableWeights(ctx.engine_ctx))
-                Need(std::find(ctx.managed_buffers.begin(),ctx.managed_buffers.end(),reinterpret_cast<void*>(old.address))==ctx.managed_buffers.end(),"old Q8 owner survived panel commit");
             return seconds;
         };
         micius::i22::Memory("before_load");

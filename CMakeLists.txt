@@ -1,8 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(MICIUS VERSION 0.7.0 LANGUAGES CXX)
+project(MICIUS VERSION 0.7.1 LANGUAGES CXX)
 
 include(CTest)
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+option(MICIUS_PARSER_LLAMA "Build the linkable Llama GGUF parser" ON)
+option(MICIUS_PARSER_QWEN2 "Build the linkable Qwen2 GGUF parser" ON)
+option(MICIUS_ENABLE_TEXT "Build the UTF-8 tokenizer and textual chat support" ON)
 include(CheckCXXCompilerFlag)
 include(CheckIPOSupported)
 
@@ -363,11 +368,31 @@ else()
         "only the required C++20 feature level will be applied")
 endif()
 
-# Preserve CONFIGURE_DEPENDS source discovery while separating the one program
-# entry point from the reusable static archive. Unlike the original file, this
-# does not compile Shell/Parser twice into both the archive and the CLI.
-file(GLOB_RECURSE ALL_SRC_FILES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+# Explicit runtime sources. File loading, architecture modules and the CLI are separate archives/targets.
+set(ALL_SRC_FILES
+    src/micius_runtime.cpp
+    src/app/BackendInfo.cpp
+    src/AI/AIComputKrnl.cpp
+    src/AI/AICoreEngine.cpp
+    src/AI/AIDataFront.cpp
+    src/AI/HardwareTopology.cpp
+    src/AI/I10AttentionValue.cpp
+    src/AI/I11AttentionScore.cpp
+    src/AI/I13W8A8GEMV.cpp
+    src/AI/I15AttentionValue.cpp
+    src/AI/I17AttentionScore.cpp
+    src/AI/I19AttentionScore.cpp
+    src/AI/i25/PanelGEMV.cpp
+    src/AI/I2Diagnostic.cpp
+    src/AI/I3Intervention.cpp
+    src/AI/I4MixedPrecision.cpp
+    src/AI/LoggerCore.cpp
+    src/AI/PreparedGEMVWeights.cpp
+    src/AI/ReferenceAttentionAVX2.cpp
+    src/AI/ReferenceF32WeightGEMVAVX2.cpp
+    src/AI/ReferenceGEMVAVX2.cpp
+    src/AI/ReferenceW8A8GEMVAVX2.cpp
+    src/app/I4Evaluation.cpp
 )
 
 if(MICIUS_I10_VALUE64)
@@ -419,14 +444,7 @@ else()
     list(FILTER ALL_SRC_FILES EXCLUDE REGEX "I19AttentionScore\\.cpp$")
 endif()
 
-set(MICIUS_CLI_MAIN_SOURCES ${ALL_SRC_FILES})
-list(FILTER MICIUS_CLI_MAIN_SOURCES INCLUDE REGEX "MiciusCLIMain\\.cpp$")
-
 set(MICIUS_CORE_SOURCES ${ALL_SRC_FILES})
-list(FILTER MICIUS_CORE_SOURCES EXCLUDE REGEX "MiciusCLIMain\\.cpp$")
-if(NOT MICIUS_I6_BENCHMARK)
-    list(FILTER MICIUS_CORE_SOURCES EXCLUDE REGEX "I6Benchmark\\.cpp$")
-endif()
 if(NOT MICIUS_I2_DIAGNOSTICS)
     list(FILTER MICIUS_CORE_SOURCES EXCLUDE REGEX "I2Diagnostic\\.cpp$")
 endif()
@@ -552,7 +570,7 @@ if(MICIUS_BENCHMARK_ITT)
     enable_language(C)
     add_library(micius_ittnotify STATIC
         "${MICIUS_ITT_ROOT}/src/ittnotify/ittnotify_static.c")
-    target_include_directories(micius_ittnotify SYSTEM PUBLIC "${MICIUS_ITT_ROOT}/include")
+    target_include_directories(micius_ittnotify SYSTEM PUBLIC "$<BUILD_INTERFACE:${MICIUS_ITT_ROOT}/include>")
     target_link_libraries(micius_ittnotify PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
     if(MICIUS_STATIC_RUNTIME AND MSVC)
         set_property(TARGET micius_ittnotify PROPERTY
@@ -622,14 +640,14 @@ target_include_directories(micius_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/AI>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/app>
-    $<INSTALL_INTERFACE:include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(micius_core
     PUBLIC
         Threads::Threads
     PRIVATE
-        micius_build_options
+        $<BUILD_INTERFACE:micius_build_options>
 )
 
 if(MICIUS_STATIC_RUNTIME AND MSVC)
@@ -732,15 +750,100 @@ endfunction()
 
 micius_enable_ipo(micius_core)
 
-if(MICIUS_BUILD_CLI)
-    if(NOT MICIUS_CLI_MAIN_SOURCES)
-        message(FATAL_ERROR "MICIUS_BUILD_CLI is ON, but MiciusCLIMain.cpp was not found")
-    endif()
+set_target_properties(micius_core PROPERTIES EXPORT_NAME core)
+# Static LTO objects require the corresponding linker in downstream executables.
+if(MICIUS_ENABLE_LTO AND MICIUS_LLD_AVAILABLE)
+    target_link_options(micius_core INTERFACE -fuse-ld=lld)
+endif()
+if(_int8 AND NOT MSVC)
+    foreach(feature avxvnni avx512vnni avxvnniint8 avxvnniint16)
+        if(MICIUS_HAS_DISABLE_${feature})
+            target_link_options(micius_core INTERFACE "-mno-${feature}")
+        endif()
+    endforeach()
+endif()
 
-    add_executable(micius_cli ${MICIUS_CLI_MAIN_SOURCES})
+add_library(micius_gguf STATIC
+    src/app/MiciusGGUFParser.cpp src/app/MiciusTensorCodec.cpp
+    src/gguf/ContextDirectory.cpp src/gguf/FileModel.cpp)
+add_library(MICIUS::gguf ALIAS micius_gguf)
+set_target_properties(micius_gguf PROPERTIES EXPORT_NAME gguf)
+target_link_libraries(micius_gguf PUBLIC micius_core PRIVATE $<BUILD_INTERFACE:micius_build_options>)
+target_compile_definitions(micius_gguf PRIVATE $<TARGET_PROPERTY:micius_core,COMPILE_DEFINITIONS>)
+if(WIN32)
+    target_link_libraries(micius_gguf PRIVATE bcrypt)
+else()
+    find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+    target_link_libraries(micius_gguf PRIVATE OpenSSL::Crypto)
+endif()
+set(_release_targets micius_core micius_gguf)
+if(MICIUS_ENABLE_TEXT)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(MICIUS_PCRE2 REQUIRED IMPORTED_TARGET libpcre2-8)
+    add_library(micius_text STATIC src/text/Tokenizer.cpp src/text/TextABI.cpp src/text/Conversation.cpp)
+    add_library(MICIUS::text ALIAS micius_text)
+    set_target_properties(micius_text PROPERTIES EXPORT_NAME text)
+    target_link_libraries(micius_text PUBLIC micius_gguf PRIVATE PkgConfig::MICIUS_PCRE2)
+    list(APPEND _release_targets micius_text)
+    install(FILES include/micius_text.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+endif()
+set(_parser_targets)
+set(_cli_parsers)
+foreach(arch Llama Qwen2)
+    string(TOUPPER ${arch} flag)
+    string(TOLOWER ${arch} key)
+    if(MICIUS_PARSER_${flag})
+        set(target micius_parser_${key})
+        add_library(${target} STATIC src/gguf/${arch}Parser.cpp)
+        add_library(MICIUS::parser_${key} ALIAS ${target})
+        set_target_properties(${target} PROPERTIES EXPORT_NAME parser_${key})
+        target_include_directories(${target} PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+        target_compile_features(${target} PRIVATE cxx_std_20)
+        list(APPEND _parser_targets ${target})
+        list(APPEND _release_targets ${target})
+        list(APPEND _cli_parsers MICIUS_LINK_${flag}=1)
+    endif()
+endforeach()
+if(MSVC AND MICIUS_STATIC_RUNTIME)
+    set_property(TARGET micius_gguf ${_parser_targets} PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
+if(_parser_targets AND (MICIUS_BUILD_CLI OR BUILD_TESTING))
+    add_library(micius_shell STATIC src/app/MiciusShell.cpp)
+    if(MICIUS_I6_BENCHMARK)
+        target_sources(micius_shell PRIVATE src/app/I6Benchmark.cpp)
+    endif()
+    target_compile_definitions(micius_shell PRIVATE ${_cli_parsers} $<TARGET_PROPERTY:micius_core,COMPILE_DEFINITIONS>)
+    target_link_libraries(micius_shell PUBLIC micius_gguf PRIVATE ${_parser_targets} micius_build_options)
+    if(MICIUS_ENABLE_TEXT)
+        target_sources(micius_shell PRIVATE src/app/ChatShell.cpp)
+        target_link_libraries(micius_shell PRIVATE micius_text)
+        target_compile_definitions(micius_shell PUBLIC MICIUS_HAS_TEXT=1)
+    endif()
+    if(MICIUS_BENCHMARK_ITT)
+        target_link_libraries(micius_shell PRIVATE micius_ittnotify)
+    endif()
+    if(MSVC AND MICIUS_STATIC_RUNTIME)
+        set_property(TARGET micius_shell PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
+endif()
+if(MICIUS_BUILD_CLI)
+    if(NOT _parser_targets)
+        message(FATAL_ERROR "The CLI requires at least one architecture parser")
+    endif()
+    add_executable(micius_cli src/app/MiciusCLIMain.cpp)
+    set(_cli_artwork "${CMAKE_CURRENT_SOURCE_DIR}/src/app/MICIUS.txt")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_cli_artwork}")
+    file(READ "${_cli_artwork}" MICIUS_CLI_ARTWORK)
+    string(REPLACE "\r\n" "\n" MICIUS_CLI_ARTWORK "${MICIUS_CLI_ARTWORK}")
+    configure_file(cmake/CliArtwork.h.in generated/CliArtwork.h @ONLY)
+    target_include_directories(micius_cli PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_compile_definitions(micius_cli PRIVATE MICIUS_VERSION_STRING="${PROJECT_VERSION}")
-    target_link_libraries(micius_cli PRIVATE micius_core Threads::Threads)
+    target_link_libraries(micius_cli PRIVATE micius_shell)
     micius_configure_executable(micius_cli)
+    install(TARGETS micius_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 # Keep the original sandbox target name and output behavior. The rebuilt source
@@ -833,10 +936,13 @@ if(BUILD_TESTING)
     micius_add_contract_test(w8a8_runtime_contract_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/w8a8_runtime_contract_tests.cpp")
     endif()
     micius_add_contract_test(w8a8_gemv_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/w8a8_gemv_tests.cpp")
-    micius_add_contract_test(gguf_parser_tests
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/gguf_parser_tests.cpp")
+    if(MICIUS_PARSER_LLAMA)
+        micius_add_contract_test(gguf_parser_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/gguf_parser_tests.cpp")
+        target_link_libraries(gguf_parser_tests PRIVATE micius_gguf micius_parser_llama)
+    endif()
     micius_add_contract_test(tensor_codec_tests
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor_codec_tests.cpp")
+    target_link_libraries(tensor_codec_tests PRIVATE micius_gguf)
     micius_add_contract_test(prepared_gemv_tests
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/prepared_gemv_tests.cpp")
     target_sources(prepared_gemv_tests PRIVATE tests/reference/r8_q8_frozen.cpp)
@@ -850,11 +956,14 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/attention_query_f64_cache_tests.cpp")
     micius_add_contract_test(attention_score_time_quad_tests
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/attention_score_time_quad_tests.cpp")
-    micius_add_contract_test(benchmark_itt_roi_tests
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_itt_roi_tests.cpp")
-    if(MICIUS_BENCHMARK_ITT)
-        target_compile_definitions(benchmark_itt_roi_tests PRIVATE MICIUS_BENCHMARK_ITT=1)
-        target_link_libraries(benchmark_itt_roi_tests PRIVATE micius_ittnotify)
+    if(TARGET micius_shell)
+        micius_add_contract_test(benchmark_itt_roi_tests
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_itt_roi_tests.cpp")
+        target_link_libraries(benchmark_itt_roi_tests PRIVATE micius_shell)
+        if(MICIUS_BENCHMARK_ITT)
+            target_compile_definitions(benchmark_itt_roi_tests PRIVATE MICIUS_BENCHMARK_ITT=1)
+            target_link_libraries(benchmark_itt_roi_tests PRIVATE micius_ittnotify)
+        endif()
     endif()
 endif()
 
@@ -907,7 +1016,7 @@ if(MICIUS_I22_RELEASE_LOADER_SCALES)
   if(NOT MICIUS_I19_SCORE_GROUP3 OR NOT MICIUS_I1_MODE EQUAL 2)
     message(FATAL_ERROR "Loader descriptor retirement requires the I19 AVX2 binding configuration.")
   endif()
-  set_property(SOURCE src/app/MiciusShell.cpp APPEND PROPERTY COMPILE_DEFINITIONS MICIUS_I22_RELEASE_LOADER_SCALES=1)
+  set_property(SOURCE src/gguf/FileModel.cpp APPEND PROPERTY COMPILE_DEFINITIONS MICIUS_I22_RELEASE_LOADER_SCALES=1)
 endif()
 if(BUILD_TESTING)
   micius_add_contract_test(i22_loader_lifetime_tests "${CMAKE_CURRENT_SOURCE_DIR}/tests/i22_loader_lifetime_tests.cpp")
@@ -932,7 +1041,7 @@ if(BUILD_TESTING)
   endif()
 endif()
 
-if(BUILD_TESTING AND MICIUS_BUILD_CLI AND _release_simd)
+if(BUILD_TESTING AND MICIUS_BUILD_CLI AND MICIUS_PARSER_LLAMA AND _release_simd)
     find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
     set(_trace_check)
     if(WIN32 AND MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
@@ -941,4 +1050,65 @@ if(BUILD_TESTING AND MICIUS_BUILD_CLI AND _release_simd)
     add_test(NAME release_cli_contract
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_release_tests.py"
                 $<TARGET_FILE:micius_cli> "${MICIUS_BACKEND}" ${_trace_check})
+endif()
+
+if(TARGET micius_ittnotify)
+    list(APPEND _release_targets micius_ittnotify)
+endif()
+install(TARGETS ${_release_targets} EXPORT MICIUSTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(FILES include/micius_runtime.h include/micius_gguf.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+set(_micius_package "${CMAKE_INSTALL_LIBDIR}/cmake/MICIUS")
+configure_package_config_file(cmake/MICIUSConfig.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/MICIUSConfig.cmake"
+    INSTALL_DESTINATION "${_micius_package}")
+write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/MICIUSConfigVersion.cmake"
+    VERSION ${PROJECT_VERSION} COMPATIBILITY SameMinorVersion)
+install(EXPORT MICIUSTargets NAMESPACE MICIUS:: DESTINATION "${_micius_package}")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/MICIUSConfig.cmake" "${CMAKE_CURRENT_BINARY_DIR}/MICIUSConfigVersion.cmake"
+    DESTINATION "${_micius_package}")
+
+if(BUILD_TESTING)
+    enable_language(C)
+    add_executable(m2_logger_contract tests/logger_contract.cpp)
+    target_link_libraries(m2_logger_contract PRIVATE micius_core)
+    add_test(NAME logger_contract COMMAND m2_logger_contract)
+    if(MICIUS_ENABLE_TEXT)
+        add_executable(m2_token_probe examples/text-consumer/token_probe.c)
+        target_link_libraries(m2_token_probe PRIVATE micius_text)
+        set_target_properties(m2_token_probe PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11)
+        if(MICIUS_BUILD_CLI AND MICIUS_PARSER_LLAMA AND MICIUS_PARSER_QWEN2 AND _release_simd)
+            find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+            add_executable(m2_chat_contract tests/chat_state_contract.cpp)
+            target_link_libraries(m2_chat_contract PRIVATE micius_text ${_parser_targets})
+            add_test(NAME chat_text_contract COMMAND "${Python3_EXECUTABLE}" -B
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/chat_text_tests.py" $<TARGET_FILE:m2_token_probe>
+                $<TARGET_FILE:m2_chat_contract> $<TARGET_FILE:micius_cli>)
+        endif()
+    endif()
+    add_executable(abi_v07_client tests/abi_v07_client.c)
+    target_include_directories(abi_v07_client BEFORE PRIVATE tests/reference/v07)
+    target_link_libraries(abi_v07_client PRIVATE micius_core)
+    set_target_properties(abi_v07_client PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11)
+    add_test(NAME abi_v07_client COMMAND abi_v07_client)
+    if(_parser_targets)
+        add_executable(m1_model_probe examples/file-consumer/model_probe.c)
+        target_link_libraries(m1_model_probe PRIVATE micius_gguf ${_parser_targets})
+        foreach(arch LLAMA QWEN2)
+            if(MICIUS_PARSER_${arch})
+                target_compile_definitions(m1_model_probe PRIVATE LINK_${arch})
+            endif()
+        endforeach()
+        set_target_properties(m1_model_probe PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11)
+    endif()
+    if(MICIUS_PARSER_QWEN2 AND _release_simd)
+        find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
+        if(MICIUS_BUILD_CLI)
+            add_executable(m1_file_session_contract tests/file_session_contract.cpp)
+            target_link_libraries(m1_file_session_contract PRIVATE micius_gguf micius_parser_qwen2)
+            add_test(NAME file_session_contract COMMAND "${Python3_EXECUTABLE}" -B
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/module_session_tests.py"
+                $<TARGET_FILE:m1_file_session_contract> $<TARGET_FILE:micius_cli>)
+        endif()
+        add_test(NAME qwen2_forward_contract COMMAND "${Python3_EXECUTABLE}" -B
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/qwen2_forward_tests.py" $<TARGET_FILE:m1_model_probe> "${MICIUS_BACKEND}")
+    endif()
 endif()

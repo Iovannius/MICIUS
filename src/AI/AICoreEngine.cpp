@@ -345,7 +345,7 @@ ReferenceMathStatus ReferenceApplyRoPE(
     float* values,
     const RoPEFreqCache& cache,
     uint32_t position,
-    uint32_t heads) noexcept
+    uint32_t heads, bool split_half) noexcept
 {
     if (!values || !cache.cos_table || !cache.sin_table ||
         cache.head_dim == 0 || (cache.head_dim & 1U) != 0 ||
@@ -358,16 +358,18 @@ ReferenceMathStatus ReferenceApplyRoPE(
     for (uint32_t head = 0; head < heads; ++head) {
         float* head_values = values + static_cast<size_t>(head) * cache.head_dim;
         for (uint32_t i = 0; i < cache.head_dim; i += 2U) {
-            const float x0 = head_values[i];
-            const float x1 = head_values[i + 1U];
+            const uint32_t first = split_half ? i / 2U : i;
+            const uint32_t second = split_half ? first + cache.head_dim / 2U : i + 1U;
+            const float x0 = head_values[first];
+            const float x1 = head_values[second];
             const float cosine = cos_row[i];
             const float sine = sin_row[i];
             if (!std::isfinite(x0) || !std::isfinite(x1) ||
                 !std::isfinite(cosine) || !std::isfinite(sine)) {
                 return ReferenceMathStatus::NUMERIC_ERROR;
             }
-            head_values[i] = x0 * cosine - x1 * sine;
-            head_values[i + 1U] = x1 * cosine + x0 * sine;
+            head_values[first] = x0 * cosine - x1 * sine;
+            head_values[second] = x1 * cosine + x0 * sine;
         }
     }
     return ReferenceMathStatus::OK;
@@ -613,7 +615,7 @@ AIEngineFront::~AIEngineFront()
 bool AIEngineFront::BindValidatedTensors(
     const MiciusTensorEntry* entries,
     uint32_t count,
-    std::vector<OwnedScaleBuffer>&& scale_buffers)
+    std::vector<OwnedScaleBuffer>&& scale_buffers, bool split_half_rope)
 {
     // The public v0.6.3 tensor contract is reference-only and Q8_32. The
     // dormant speculative kernels still use their historical Q8_64 layout and
@@ -696,6 +698,10 @@ bool AIEngineFront::BindValidatedTensors(
     for (uint32_t l = 0; l < config.num_layers; ++l) {
         std::string pfx = "blk." + std::to_string(l) + ".";
         
+        candidate_layers[l].split_half_rope = split_half_rope;
+        candidate_layers[l].q_bias = static_cast<const float*>(fetch_tensor(pfx + "attn_q.bias"));
+        candidate_layers[l].k_bias = static_cast<const float*>(fetch_tensor(pfx + "attn_k.bias"));
+        candidate_layers[l].v_bias = static_cast<const float*>(fetch_tensor(pfx + "attn_v.bias"));
         //64字节对齐
         if (static_cast<size_t>(total_qkv_dim) >
                 std::numeric_limits<size_t>::max() / config.hidden_dim ||
@@ -1596,9 +1602,17 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
         float* query = reference_qkv.get();
         float* key = reference_qkv.get() + q_dim;
         float* value = key + kv_dim;
-        math_status = ReferenceApplyRoPE(query, rope_cache, position, config.num_heads);
+        if (layer.q_bias) {
+            for (uint32_t j = 0; j < q_dim; ++j) query[j] += layer.q_bias[j];
+            for (uint32_t j = 0; j < kv_dim; ++j) {
+                key[j] += layer.k_bias[j];
+                value[j] += layer.v_bias[j];
+                if (!std::isfinite(value[j])) return ReferenceStepResult::NUMERIC_ERROR;
+            }
+        }
+        math_status = ReferenceApplyRoPE(query, rope_cache, position, config.num_heads, layer.split_half_rope);
         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
-        math_status = ReferenceApplyRoPE(key, rope_cache, position, config.num_kv_heads);
+        math_status = ReferenceApplyRoPE(key, rope_cache, position, config.num_kv_heads, layer.split_half_rope);
         if (math_status != ReferenceMathStatus::OK) return ToStepResult(math_status);
 #if defined(MICIUS_I2_DIAGNOSTICS)
         if (!i2.boundary(static_cast<int>(layer_index),"qkv.rope",reference_qkv.get(),reference_qkv_dim))

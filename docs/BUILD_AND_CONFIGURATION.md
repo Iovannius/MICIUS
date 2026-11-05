@@ -1,10 +1,12 @@
 # 构建与配置
 
-Windows x64 发布配置使用 MSYS2 Clang64、CMake ≥ 3.21、Ninja 和 Python 3.8+。脚本以仓库为根目录，默认查找 `/c/msys64/clang64/bin`。自定义安装路径可设置 `MICIUS_CLANG64_BIN`。本次验证使用 Clang 22.1.8 和 C++20。
+v0.7.1 可从解压后的源码根目录直接构建。两套配置分别安装到独立的前缀。模块选择与外部 C 链接示例见 [模块 SDK](M1-MODULES-AND-ABI.md)。
+
+Windows x64 发布配置使用 MSYS2 Clang64、CMake ≥ 3.21、Ninja 和 Python 3.8+。默认启用的文本组件还需要 pkg-config 和 Clang64 的 PCRE2-8。运行时将 Clang64 的 `bin` 加入 `PATH`。脚本默认查找 `/c/msys64/clang64/bin`，自定义路径可设置 `MICIUS_CLANG64_BIN`。本次验证使用 Clang 22.1.8 和 C++20。
 
 | 构建目标 | Bash 入口 | 产物目录 |
 |---|---|---|
-| v0.7 INT8 | `bash scripts/build-int8-release-windows.sh` | `build-int8-release/` |
+| v0.7.1 INT8 | `bash scripts/build-int8-release-windows.sh` | `build-int8-release/` |
 | F64 数值参考 | `bash scripts/build-f64-reference-windows.sh` | `build-f64-reference/` |
 
 脚本要求同名构建目录尚未存在，检查源码集合与散列后执行配置、构建和 CTest。日志与程序散列保存在 `logs/<preset>.*`。已有配置可执行增量构建。
@@ -15,7 +17,7 @@ cmake --build --preset int8-release-windows
 ctest --preset int8-release-windows --output-on-failure
 ```
 
-`bin/micius_cli.exe` 通过 `--model-benchmark` 或交互 `load` / `generate` 接入模型。`bin/micius_sandbox.exe` 使用合成张量验证 V1。CMake 静态库目标为 `MICIUS::core`。模型和构建产物在源码 ZIP 之外。
+`bin/micius_cli.exe` 可通过 `--chat MODEL` 或交互 `load` / `chat` 开始文字对话。数字 token 入口为 `generate` 和 `--model-benchmark`。`bin/micius_sandbox.exe` 使用合成张量验证 V1。静态组件包括 `MICIUS::core`、`MICIUS::gguf`、`MICIUS::parser_llama`、`MICIUS::parser_qwen2` 和 `MICIUS::text`。可用 `cmake --install build-int8-release --prefix <prefix>` 安装 INT8 SDK。纯数值构建可在新构建目录配置 `-DMICIUS_ENABLE_TEXT=OFF`。
 
 ## 后端选择
 

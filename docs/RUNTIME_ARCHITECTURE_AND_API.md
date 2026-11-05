@@ -1,6 +1,8 @@
 # 运行时与 V1 接口
 
-v0.7 的 INT8 与 F64 共用 C ABI `0x00060003`。0.7.0 是源码发布版本，调用者从头文件读取 ABI 常量。模型走 `MICIUS_EXECUTION_REFERENCE` 的权威前向，数值后端由所链接的库决定。[公开头文件](../include/micius_runtime.h)
+M1 增加独立版本的 GGUF 文件会话和 Parser 接口，并实现 Qwen2 的 bias 和分半 RoPE。原 V1 的相邻配对张量约定继续适用于直接绑定。见 [M1 ABI 与所有权](M1-MODULES-AND-ABI.md)。
+
+v0.7.1 的 INT8 与 F64 共用运行时 C ABI `0x00060003`。源码发布版本和 ABI 常量各自编号。模型走 `MICIUS_EXECUTION_REFERENCE` 的单线程前向，数值后端由所链接的库决定。[运行时接口](../include/micius_runtime.h) · [文件与 Parser 接口](../include/micius_gguf.h) · [文本接口](../include/micius_text.h)
 
 ## 一次会话
 

@@ -6,6 +6,7 @@
 #include "AIComputKrnl.h"
 #include "PreparedGEMVWeights.h"
 #include "AI/I25Binding.h"
+#include "AI/FileTensorBinding.h"
 namespace micius::i25 { struct Panels; }
 
 #include "SchedulerCore.h"
@@ -152,6 +153,10 @@ enum class ReferenceStepResult
 };
 
 struct MiciusLayerWeights {
+    bool split_half_rope = false;
+    const float* q_bias = nullptr;
+    const float* k_bias = nullptr;
+    const float* v_bias = nullptr;
     int8_t* qkv_packed_weights = nullptr;
     QuantDescriptor* qkv_packed_scales = nullptr;
     float* qkv_packed_compact_scales = nullptr;
@@ -267,20 +272,20 @@ private:
     size_t reference_kv_elements = 0;
     bool reference_has_logits = false;
 
-    // Only Micius_BindModelTensorsV1 can enter this boundary. The method takes
+    // Only the shared checked tensor binder can enter this boundary. It takes
     // ownership of the private scale representation created after full public
     // descriptor validation, so no public C++ caller can assert the invariant.
     bool BindValidatedTensors(
         const MiciusTensorEntry* entries,
         uint32_t count,
-        std::vector<OwnedScaleBuffer>&& scale_buffers);
+        std::vector<OwnedScaleBuffer>&& scale_buffers, bool split_half_rope);
 
-    friend bool ::Micius_BindModelTensorsV1(
+    friend bool micius::internal::BindTypedTensors(
         MiciusContext* context,
         const MiciusTensorEntryV1* entries,
         uint32_t count,
         size_t entry_size,
-        uint32_t abi_version);
+        uint32_t abi_version, micius::internal::ProjectionSemantics);
 
     ReferenceStepResult RunReferenceToken(uint32_t token, uint32_t* out_token) noexcept;
     

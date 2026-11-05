@@ -1,0 +1,6 @@
+#pragma once
+#include <string_view>
+
+namespace micius::cli {
+inline constexpr std::string_view artwork = R"micius(@MICIUS_CLI_ARTWORK@)micius";
+}
