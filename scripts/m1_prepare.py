@@ -11,7 +11,7 @@ import sys
 from verify_release import MANIFEST, verify
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILES = {"INT8": ("int8-release-windows",27), "F64": ("f64-reference-windows",20)}
+PROFILES = {"INT8": ("int8-release-windows",30), "F64": ("f64-reference-windows",23)}
 
 def require(ok, message):
     if not ok:

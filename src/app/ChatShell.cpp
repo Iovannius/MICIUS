@@ -1,6 +1,6 @@
 #include "MiciusShell.h"
 #include "gguf/FileReader.h"
-#include "text/Conversation.h"
+#include "session/Session.h"
 #include <charconv>
 #include <iostream>
 #include <stdexcept>
@@ -55,33 +55,45 @@ public:
 };
 }
 
-int MiciusShell::ChatLoop(uint32_t max_new, bool trace)
+int MiciusShell::ChatLoop(uint32_t max_new, bool trace, const char* session_id)
 {
     if (!ctx.file_model) throw std::invalid_argument("Load a GGUF model before entering chat");
     using namespace micius::text;
-    Tokenizer tokenizer(micius::gguf::FileReader(*ctx.file_model));
-    Conversation session(ctx.engine_ctx,ctx.engine_config.max_seq_len,tokenizer);
-    ShellPrint("[Chat] UTF-8 chat. :reset starts over, :log start/stop controls the transcript, :exit leaves chat.\n");
-    size_t turns=0;
+    micius::session::Session session(ctx.file_model,session_id);
+    ShellPrint("[Chat] UTF-8 chat. :save, :config, :reload, :reset, :log start/stop, :exit.\n");
+    ShellPrint("[Chat] Directory: "+session.Directory()+"\n[Chat] Parameters: sampling.conf (read before every turn).\n");
+    if(max_new)ShellPrint("[Chat] Reply token limit overridden to "+std::to_string(max_new)+" for this chat.\n");
+    session.Save(); // An empty chat can also be resumed and configured before generation.
+    size_t turns=session.Turns();
     for (;;) {
         ctx.is_interrupted.store(false,std::memory_order_relaxed);
         std::cout<<"\033[36mYou: \033[0m"<<std::flush;
         std::string line;
         if (!ReadLine(line)) {
             if (!std::cin.eof() && ctx.is_interrupted.load()) { std::cin.clear(); continue; }
-            break;
+            session.Save(); break;
         }
         if (!line.empty() && line.back()=='\r') line.pop_back();
         if (line.empty()) continue;
         LogInput("You: ",line);
-        if (line==":exit") break;
+        if (line==":exit") { session.Save(); break; }
         if (line==":log" || line.starts_with(":log ") || line.starts_with(":log\t")) {
             try { CmdLog(this,&ctx,TokenizeInput(line.substr(1))); }
             catch (const std::exception& e) { ShellPrint(std::string("[Log] ")+e.what()+"\n"); }
             continue;
         }
+        if(line.front()==':' && line!=":reset") {
+            try {
+                if(line==":save") { session.Save();ShellPrint("[Chat] Snapshot saved.\n"); }
+                else if(line==":config")ShellPrint(session.Configuration());
+                else if(line==":reload") { session.Reload();ShellPrint("[Chat] Configuration loaded.\n"); }
+                else if(line==":help")ShellPrint("[Chat] :save :config :reload :reset :log start/stop :exit. Resume from the command shell with chat resume ID.\n");
+                else ShellPrint("[Chat] Unknown command. Use :help.\n");
+            } catch(const std::exception& e) { ShellPrint(std::string("[Chat] ")+e.what()+"\n"); }
+            continue;
+        }
         if (line==":reset") {
-            session.Reset(); turns=0;
+            session.Reset(); turns=0;session.Save();
             ShellPrint("[Chat] Conversation reset.\n");
             if (trace) std::cerr<<"[chat-reset]\n";
             continue;
@@ -111,28 +123,38 @@ int MiciusShell::ChatLoop(uint32_t max_new, bool trace)
             ShellPrint(std::string("\n[Chat] Turn rejected: ")+e.what()+"\n");
             if (trace) std::cerr<<"[chat-error]\n";
         }
+        // A cancelled/rejected turn is rolled back to the last committed history.
+        // Persistence failure is fatal to this CLI invocation, never reported as saved.
+        session.Save();
     }
-    session.Reset();
     return 0;
 }
 
 void MiciusShell::CmdChat(MiciusShell* shell, ShellContext*, const std::vector<std::string>& args)
 {
-    if (args.size()>2) throw std::invalid_argument("Usage: chat [max_reply_tokens]");
-    shell->ChatLoop(args.size()==2 ? Number(args[1]) : 128);
+    if(args.size()==2 && args[1]=="list") {
+        shell->ShellPrint(micius::session::Session::List(shell->ctx.file_model));return;
+    }
+    if((args.size()==3 || args.size()==4) && args[1]=="resume") {
+        shell->ChatLoop(args.size()==4?Number(args[3]):0,false,args[2].c_str());return;
+    }
+    if (args.size()>2) throw std::invalid_argument("Usage: chat [max_reply_tokens] | chat list | chat resume ID [max_reply_tokens]");
+    shell->ChatLoop(args.size()==2 ? Number(args[1]) : 0);
 }
 
 int MiciusShell::RunChat(const std::vector<std::string>& args)
 {
-    if (args.empty() || args[0].empty()) throw std::invalid_argument("Usage: --chat MODEL [--context N] [--max-new N]");
-    uint32_t context=1024, reply=128;
+    if (args.empty() || args[0].empty()) throw std::invalid_argument("Usage: --chat MODEL [--context N] [--max-new N] [--session ID]");
+    uint32_t context=1024, reply=0;
+    std::string id;
     bool trace=false;
     for (size_t i=1;i<args.size();++i) {
         const auto& option=args[i];
         if (option=="--trace-turns") { trace=true; continue; }
+        if (option=="--session" && i+1<args.size()) { id=args[++i];continue; }
         if ((option!="--context" && option!="--max-new") || i+1==args.size())
             throw std::invalid_argument("Invalid --chat option: "+option);
         (option=="--context" ? context : reply)=Number(args[++i]);
     }
-    return LoadFile(args[0],context) ? ChatLoop(reply,trace) : 1;
+    return LoadFile(args[0],context) ? ChatLoop(reply,trace,id.empty()?nullptr:id.c_str()) : 1;
 }

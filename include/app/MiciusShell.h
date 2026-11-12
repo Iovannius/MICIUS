@@ -70,7 +70,7 @@ private:
     bool ReadLine(std::string& line);
 #ifdef MICIUS_HAS_TEXT
     static void CmdChat(MiciusShell*, ShellContext*, const std::vector<std::string>&);
-    int ChatLoop(uint32_t max_new, bool trace = false);
+    int ChatLoop(uint32_t max_new, bool trace = false, const char* session_id = nullptr);
 #endif
 
     //过滤器，去除控制字符与彩色字符

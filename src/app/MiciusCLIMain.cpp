@@ -75,7 +75,7 @@ int main(int argc, char** argv)
     if (argc == 2 && std::string(argv[1]) == "--help") {
         std::cout << "micius_cli [--version | --model-benchmark --help]\n"
 #ifdef MICIUS_HAS_TEXT
-                     "micius_cli --chat MODEL [--context N] [--max-new N]\n"
+                     "micius_cli --chat MODEL [--context N] [--max-new N] [--session ID]\n"
 #endif
                      "Start without arguments for the interactive shell.\n";
         return 0;

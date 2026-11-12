@@ -61,9 +61,9 @@ std::string Sha256(const void* data, size_t size)
     return Hex(digest.data(), digest.size());
 }
 
-std::string CreateContextDirectory(const char* root, const void* bytes, size_t size)
+std::string CreateContextDirectory(const char* root, const std::string& identity)
 {
-    const auto parent = fs::absolute(fs::u8path(root)) / Sha256(bytes, size) / "contexts";
+    const auto parent = fs::absolute(fs::u8path(root)) / identity / "contexts";
     fs::create_directories(NativePath(parent));
     std::random_device random;
     std::uniform_int_distribution<unsigned> sample(0, 255);

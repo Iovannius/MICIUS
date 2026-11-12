@@ -3,17 +3,50 @@
 #include <stdexcept>
 
 namespace micius::text {
-Conversation::Conversation(MiciusContext* ctx, size_t max_context, const Tokenizer& tok)
+Conversation::Conversation(MiciusContext* ctx, size_t max_context, const Tokenizer& tok,bool reset)
     : engine(ctx), capacity(max_context), tokenizer(tok)
 {
     if (!engine || !tok.SupportsChat())
         throw std::invalid_argument("Chat needs a loaded model with a supported GGUF chat template");
-    Reset();
+    Micius_InitSamplingV1(&sampling,sizeof(sampling));
+    if(reset)Reset();
 }
 void Conversation::Reset()
 {
     if (!Micius_ResetEngineV1(engine)) throw std::runtime_error(Micius_GetLastError());
-    history.clear(); dirty=false;
+    history.clear(); dirty=false; rng=initial_seed;
+}
+void Conversation::Configure(const MiciusSamplingOptionsV1& value,uint64_t seed)
+{
+    float f=1;uint64_t random=seed;uint32_t out=0;
+    if(!Micius_SampleTokenV1(&value,&f,1,nullptr,nullptr,0,&random,&out))
+        throw std::invalid_argument("Invalid sampling parameters");
+    if(seed!=initial_seed)rng=seed;
+    sampling=value;initial_seed=seed;
+}
+void Conversation::EnsureClean()
+{
+    if(!dirty)return;
+    if(!Micius_ResetEngineV1(engine))throw std::runtime_error(Micius_GetLastError());
+    for(uint32_t id:history)Prefill(id);
+    dirty=false;
+}
+void Conversation::AdoptRestoredHistory(std::vector<uint32_t>& tokens,uint64_t state) noexcept
+{
+    history.swap(tokens);rng=state;dirty=false;
+}
+uint32_t Conversation::Select(uint32_t greedy,const std::vector<uint32_t>& consumed,uint64_t& random)
+{
+    if(sampling.temperature==0 && (sampling.repeat_penalty==1 || !sampling.repeat_last_n))return greedy;
+    logits.resize(tokenizer.VocabularySize());
+    if(allowed.empty()) {
+        allowed.resize(logits.size());
+        for(size_t i=0;i<allowed.size();++i)allowed[i]=tokenizer.CanGenerate(static_cast<uint32_t>(i));
+    }
+    if(!Micius_CopyLastLogitsV1(engine,logits.data(),logits.size()) ||
+       !Micius_SampleTokenV1(&sampling,logits.data(),logits.size(),allowed.data(),consumed.data(),consumed.size(),&random,&greedy))
+        throw std::runtime_error("Cannot sample the current logits");
+    return greedy;
 }
 void Conversation::Prefill(uint32_t id) const
 {
@@ -39,6 +72,9 @@ Answer Conversation::Reply(std::string_view user, size_t limit, const std::atomi
         throw std::length_error("Insufficient context for this turn; use :reset or a shorter message");
     const size_t space=free-staged.size()-close.size();
     const size_t budget=std::min(space,limit);
+    auto consumed=history;
+    consumed.insert(consumed.end(),staged.begin(),staged.end());
+    uint64_t random=rng;
 
     if (dirty) {
         if (!Micius_ResetEngineV1(engine)) throw std::runtime_error(Micius_GetLastError());
@@ -52,20 +88,20 @@ Answer Conversation::Reply(std::string_view user, size_t limit, const std::atomi
         if (cancel.load(std::memory_order_relaxed)) return {Finish::Interrupted,0};
         Prefill(staged[i]);
     }
-    uint32_t next=Decode(staged.back());
+    uint32_t next=Select(Decode(staged.back()),consumed,random);
     size_t emitted=0;
     while (emitted<budget && !tokenizer.IsStop(next)) {
         if (cancel.load(std::memory_order_relaxed)) return {Finish::Interrupted,emitted};
         emit(tokenizer.Piece(next));
-        staged.push_back(next); ++emitted;
-        next=Decode(next);
+        staged.push_back(next); consumed.push_back(next); ++emitted;
+        next=Select(Decode(next),consumed,random);
     }
     if (cancel.load(std::memory_order_relaxed)) return {Finish::Interrupted,emitted};
     for (uint32_t id:close) { Prefill(id); staged.push_back(id); }
     if (Micius_GetSequenceLengthV1(engine)!=history.size()+staged.size())
         throw std::runtime_error("Chat token history/KV length mismatch");
     history.insert(history.end(),staged.begin(),staged.end());
-    dirty=false;
+    dirty=false; rng=random;
     return {tokenizer.IsStop(next) ? Finish::End :
             (space<limit ? Finish::ContextLimit : Finish::ReplyLimit),emitted};
 }

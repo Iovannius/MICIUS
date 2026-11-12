@@ -216,7 +216,7 @@ void MiciusShell::BuildDictionaries()
     cmd_router.insert({"log", {"Archive session (usage: log start <file> | log stop)", CmdLog}});
     cmd_router.insert({"generate", {"Start model generation loop (Ctrl+C to interrupt)", CmdGenerate}});
 #ifdef MICIUS_HAS_TEXT
-    cmd_router.insert({"chat", {"Chat in UTF-8 with the loaded model (chat [max_reply_tokens])", CmdChat}});
+    cmd_router.insert({"chat", {"UTF-8 chat: chat [max_reply_tokens], chat list, chat resume ID [max_reply_tokens]", CmdChat}});
 #endif
 
     /*字符串字典*/

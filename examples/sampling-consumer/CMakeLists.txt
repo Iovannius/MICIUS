@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+project(MICIUSSamplingConsumer LANGUAGES C CXX)
+find_package(MICIUS 0.7.2 REQUIRED COMPONENTS sampling)
+add_executable(micius_sampling_probe sampling_probe.c)
+target_link_libraries(micius_sampling_probe PRIVATE MICIUS::sampling)
+set_target_properties(micius_sampling_probe PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11)

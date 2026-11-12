@@ -64,6 +64,8 @@ MiciusContext* Micius_FileEngineV1(const MiciusFileModel* model);
 const MiciusConfig* Micius_FileConfigV1(const MiciusFileModel* model);
 const char* Micius_FileArchitectureV1(const MiciusFileModel* model);
 const char* Micius_FileContextDirectoryV1(const MiciusFileModel* model);
+/* SHA-256 of the complete GGUF content, borrowed until close. */
+const char* Micius_FileIdentityV1(const MiciusFileModel* model);
 
 #ifdef __cplusplus
 }

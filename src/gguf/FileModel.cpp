@@ -32,9 +32,16 @@ struct MiciusFileModel {
     std::vector<void*> buffers;
     std::string directory;
     std::string architecture;
+    std::string identity;
+    bool chat_active=false;
 };
 
 const GGUFParser& micius::gguf::FileReader(const MiciusFileModel& model) { return model.reader; }
+
+bool micius::gguf::AcquireChatEngine(MiciusFileModel* m) {
+    if(!m || m->chat_active)return false; m->chat_active=true;return true;
+}
+void micius::gguf::ReleaseChatEngine(MiciusFileModel* m) noexcept { if(m)m->chat_active=false; }
 
 namespace {
 #if defined(MICIUS_I6_BENCHMARK)
@@ -219,8 +226,9 @@ extern "C" MiciusFileModel* Micius_OpenGGUFV1(const MiciusGGUFOpenOptionsV1* o, 
         if (!model->engine) throw std::runtime_error(Micius_GetLastError());
         micius::i22::Memory("engine_allocated");
         TranslateAndBind(*model, plan.features);
+        model->identity=micius::gguf::Sha256(model->reader.FileData(),model->reader.FileSize());
         if (o->cache_root) model->directory = micius::gguf::CreateContextDirectory(o->cache_root,
-            model->reader.FileData(), model->reader.FileSize());
+            model->identity);
         return model.release();
     } catch (const std::exception& e) {
         if (error && capacity) std::snprintf(error,capacity,"%s",e.what());
@@ -235,3 +243,4 @@ extern "C" MiciusContext* Micius_FileEngineV1(const MiciusFileModel* model) { re
 extern "C" const MiciusConfig* Micius_FileConfigV1(const MiciusFileModel* model) { return model ? &model->config : nullptr; }
 extern "C" const char* Micius_FileArchitectureV1(const MiciusFileModel* model) { return model ? model->architecture.c_str() : nullptr; }
 extern "C" const char* Micius_FileContextDirectoryV1(const MiciusFileModel* model) { return model ? model->directory.c_str() : nullptr; }
+extern "C" const char* Micius_FileIdentityV1(const MiciusFileModel* model) { return model ? model->identity.c_str() : nullptr; }

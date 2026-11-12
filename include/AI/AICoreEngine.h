@@ -334,6 +334,10 @@ public:
     // Speculative reset remains rejected until the worker quiescence protocol is rebuilt.
     bool ResetState() noexcept;
 
+    size_t ReferenceStateBytes() const;
+    std::vector<uint8_t> ExportReferenceState() const;
+    void ImportReferenceState(std::span<const uint8_t> bytes, uint32_t expected_length);
+
     ReferenceStepResult PrefillReferenceToken(uint32_t token) noexcept;
     ReferenceStepResult DecodeReferenceToken(uint32_t token, uint32_t* out_token) noexcept;
     bool CopyLastReferenceLogits(float* out_logits, size_t count) const noexcept;

@@ -16,6 +16,8 @@ public:
     std::string_view Piece(uint32_t id) const;
     bool IsStop(uint32_t id) const { return id == end || id == end_of_text; }
     bool SupportsChat() const { return !system_message.empty(); }
+    bool CanGenerate(uint32_t id) const { return IsStop(id) || (id<pieces.size() && !pieces[id].empty()); }
+    size_t VocabularySize() const { return pieces.size(); }
     std::vector<uint32_t> Prompt(bool first, std::string_view user) const;
     std::vector<uint32_t> EndTurn() const;
 

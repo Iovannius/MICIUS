@@ -1,6 +1,12 @@
-# 当前状态 · v0.7.1
+# 当前状态 · v0.7.2
 
-当前发布支持 Llama 和 Qwen2 架构模块，两款已验收的 Instruct GGUF 均可在 INT8、F64 后端进行短文字对话。会话在内存中连续使用 KV，退出时结束。可读日志可以保存到文件；磁盘 KV 快照与恢复排在 v0.7.2。[v0.7.1 功能和实机证据](RELEASE_0_7_1.md) · [M1 模块与 ABI](M1-MODULES-AND-ABI.md) · [M2 文字对话与日志](M2-TEXT-CHAT.md)
+v0.7.2 收束已验收的 M3：在 v0.7.1 的文字对话和模块化 SDK 上加入 KV/上下文存盘、跨进程续聊及逐会话采样配置。Llama/Qwen2 模块、INT8/F64 数值路径和 runtime V1 ABI `0x00060003` 保持原有约定。新增 `sampling`、`session` 和不透明状态接口，推理仍为单线程。
+
+用户在 2026-11-11 完成固定实机验收，8/8 项用例通过；32 次调用以及 REVIEW/FULL 原始证据已独立复核。相同模型、数值构建、后端与容量下，跨进程续聊完整快照逐字节一致；reset 恢复数值状态与随机种子，原 V1 累计生成计数仍保持累计语义。发布整理不改变已验收的源码、公开头或 CMake 数值构建定义。
+
+新增 `bash scripts/build-cli.sh`，可在源码根目录生成 `micius_cli/micius_cli.exe`，附带运行所需的 PCRE2 DLL。保存目录仍以启动时的工作目录为基准。
+
+[发布说明和证据](RELEASE_0_7_2.md) · [快照、采样与边界](M3-PERSISTENCE-AND-SAMPLING.md) · [构建操作](BUILD_AND_CONFIGURATION.md)
 
 ## v0.7 数值与性能基线（历史）
 

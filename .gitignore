@@ -40,3 +40,7 @@ __pycache__/
 
 /results/
 /exports/
+
+# Standalone CLI output (scripts/build-cli.sh)
+/micius_cli/
+/.micius_cli-staging-*/

@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+project(MICIUSSessionConsumer LANGUAGES C CXX)
+find_package(MICIUS 0.7.2 REQUIRED COMPONENTS session parser_llama parser_qwen2)
+add_executable(micius_session_probe session_probe.c)
+target_link_libraries(micius_session_probe PRIVATE MICIUS::session MICIUS::parser_llama MICIUS::parser_qwen2)
+set_target_properties(micius_session_probe PROPERTIES LINKER_LANGUAGE CXX C_STANDARD 11)

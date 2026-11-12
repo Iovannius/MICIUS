@@ -1,6 +1,7 @@
 #include "../micius_runtime.h"
 #include "AICoreEngine.h"
 #include "AI/AICompactScaleInternal.h"
+#include "micius_state.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -19,6 +20,24 @@ struct MiciusContext {
     MiciusConfig config{};
     std::unique_ptr<AIEngineFront> core_engine;
 };
+
+extern "C" const char* Micius_StateContractV1(void) { return MICIUS_STATE_CONTRACT_ID; }
+extern "C" int Micius_ExportStateV1(MiciusContext* ctx,void* out,size_t cap,size_t* required)
+{
+    if(!ctx || !ctx->core_engine || !required || (!out && cap)) return -1;
+    try {
+        *required=ctx->core_engine->ReferenceStateBytes();
+        if(!out || cap<*required)return 0;
+        auto bytes=ctx->core_engine->ExportReferenceState();
+        std::memcpy(out,bytes.data(),bytes.size()); return 1;
+    } catch(...) { return -1; }
+}
+extern "C" int Micius_ImportStateV1(MiciusContext* ctx,const void* data,size_t size,uint32_t length)
+{
+    if(!ctx || !ctx->core_engine || !data || !size)return 0;
+    try { ctx->core_engine->ImportReferenceState({static_cast<const uint8_t*>(data),size},length); return 1; }
+    catch(...) { return 0; }
+}
 
 micius::internal::PreparedWeightStats micius::internal::GetPreparedWeightStats(
     const MiciusContext* context) noexcept
