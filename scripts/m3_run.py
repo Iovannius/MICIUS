@@ -26,11 +26,29 @@ def read(path):
 
 
 def native(args, folder, expected=0):
-    save(folder / 'command.json', {'argv': list(map(str, args))})
+    # CreateProcessW cannot use an over-MAX_PATH current directory, even with
+    # the extended path prefix. Evidence/model paths remain absolute; only the
+    # process working directory may use a shorter existing ancestor.
+    args = [str(arg.resolve()) if isinstance(arg, Path) else str(arg) for arg in args]
+    cwd = folder.resolve()
+    executable = None
+    if os.name == 'nt':
+        while len(str(cwd)) >= 248:
+            require(cwd.parent != cwd, 'No usable process working directory')
+            cwd = cwd.parent
+        # With lpApplicationName=NULL, Windows limits the program-name portion
+        # of the command line to MAX_PATH. Pass its extended absolute path
+        # separately when the copied verification executable itself is deep.
+        if len(args[0]) >= 248:
+            executable = str(Path(args[0]).resolve()).replace('/', '\\')
+            if not executable.startswith('\\\\?\\'):
+                executable = ('\\\\?\\UNC\\' + executable[2:] if executable.startswith('\\\\')
+                              else '\\\\?\\' + executable)
+    save(folder / 'command.json', {'argv': args, 'cwd': str(cwd), 'executable': executable})
     started = time.monotonic()
     print('  ' + folder.name, flush=True)
     with (folder / 'stdout.txt').open('wb') as out, (folder / 'stderr.txt').open('wb') as err:
-        child = subprocess.Popen(list(map(str, args)), cwd=folder, stdout=out, stderr=err)
+        child = subprocess.Popen(args, executable=executable, cwd=cwd, stdout=out, stderr=err)
         try:
             while True:
                 try:
@@ -124,16 +142,16 @@ def scenario(folder, probe, model, cache, protocol, config, golden=None):
             'numerical_contract': whole['core']['contract'], 'greedy_M2_match': golden is not None}
 
 
-def build():
+def build(unit='M3'):
     RESULTS.mkdir(exist_ok=True)
-    name = 'm3-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8]
+    name = unit.lower() + '-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8]
     work = RESULTS / name
     work.mkdir()
     print('WORK', work, flush=True)
     save(work / 'status.json', {'status': 'PREPARING'})
     try:
         receipt = prepare(work)
-        receipt['unit'] = 'M3'
+        receipt['unit'] = unit
         for backend in PROFILES:
             prefix = work / 'sdk' / backend
             for module in ('session', 'sampling'):
@@ -167,7 +185,7 @@ def build():
         save(work / 'prepared.json', receipt)
         identity = digest(work / 'prepared.json')
         save(work / 'status.json', {'status': 'PREPARED', 'prepared_sha256': identity})
-        save(RESULTS / 'M3-last-prepared.json', {'name': name, 'prepared_sha256': identity})
+        save(RESULTS / (unit+'-last-prepared.json'), {'name': name, 'prepared_sha256': identity})
     except BaseException as e:
         save(work / 'status.json', {'status': 'PREPARATION_STOPPED', 'error': str(e), 'type': type(e).__name__})
         raise

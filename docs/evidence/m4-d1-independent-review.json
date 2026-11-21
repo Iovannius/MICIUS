@@ -1,0 +1,75 @@
+{
+  "status": "AUDIT_PASSED_FIXED_FIRST_TOKEN_DIAGNOSTIC",
+  "run": "d1-20261121-233647-a3435e15",
+  "archive": "d1-20261121-233647-a3435e15.zip",
+  "archive_bytes": 39273354,
+  "archive_sha256": "11155703a6dccbd1e067f0ec74caf65f3ec99cbe8dc7e6e95f0c0e09cbf75b42",
+  "evidence_files_verified": 22,
+  "archive_members_verified": 24,
+  "source_package_sha256": "48d2af274119c9d9755b2320dc51477285c52b5c729d562735e94fbfd920ac2b",
+  "installed_package_matches_source": true,
+  "model_sha256": "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83",
+  "result_sha256": "8fc9e296fe1cdb6a0bd4616ca9a4b7e88ae166c127fe553212f6b3e1b2ada544",
+  "full_logits_reanalyzed": true,
+  "logits_per_engine": 5386752,
+  "prompt_tokens": 42,
+  "verdict": "FIRST_TOKEN_MATCH",
+  "next_token": 2822,
+  "next_piece": "No",
+  "micius_top1_margin": 0.8004779815673828,
+  "llama_top1_margin": 0.8367099761962891,
+  "last_row": {
+    "position": 41,
+    "micius_argmax": 2822,
+    "llama_argmax": 2822,
+    "max_abs_error": 0.7917641401290894,
+    "rmse": 0.1564519136056946,
+    "mean_shift": 0.033781356040131626,
+    "centered_rmse": 0.15276132120066777,
+    "cosine": 0.9981528752292267
+  },
+  "argmax_equal_prefixes": 41,
+  "argmax_different_prefixes": [
+    {
+      "position_zero_based": 7,
+      "human_prefix_length": 8,
+      "MICIUS": {
+        "top3": [
+          {
+            "id": 4206,
+            "logit": 12.082772254943848
+          },
+          {
+            "id": 36281,
+            "logit": 11.418048858642578
+          },
+          {
+            "id": 8113,
+            "logit": 11.305331230163574
+          }
+        ],
+        "top1_margin": 0.6647233963012695
+      },
+      "LLAMA": {
+        "top3": [
+          {
+            "id": 8113,
+            "logit": 12.403299331665039
+          },
+          {
+            "id": 4206,
+            "logit": 11.826757431030273
+          },
+          {
+            "id": 36281,
+            "logit": 11.786709785461426
+          }
+        ],
+        "top1_margin": 0.5765419006347656
+      }
+    }
+  ],
+  "scope": "Same fixed GGUF and 42 prompt tokens select No in both engines. Does not establish model-size causality, whole-response equality, numerical equivalence, or quality/performance acceptance.",
+  "no_real_inference_or_git_operations_performed": true,
+  "publication_note": "Local absolute paths replaced by run/archive names; original hashes and measurements preserved."
+}

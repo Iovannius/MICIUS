@@ -1,9 +1,11 @@
 #include "BackendInfo.h"
 #include "AI/I25Binding.h"
+#include "AI/FileWeights.h"
 
 namespace micius::backend {
 const char* GEMVBackend(const MiciusContext* context) noexcept
 {
+    if (internal::UsesFileWeights(context)) return "gguf_block_dequant_ordered_f64";
     if (i25::BindingStats(context).active) return "w8a8_avx2_panel4";
 #if defined(MICIUS_I13_GEMV4)
     return "w8a8_avx2_row4";
@@ -22,8 +24,9 @@ const char* GEMVBackend(const MiciusContext* context) noexcept
 #endif
 }
 
-const char* ScaleValidation() noexcept
+const char* ScaleValidation(const MiciusContext* context) noexcept
 {
+    if (internal::UsesFileWeights(context)) return "gguf_finite_decode_at_binding";
 #if defined(MICIUS_REFERENCE_GEMV_PREVALIDATED_SCALES)
     return "private_v1_prevalidated_checked_fallback";
 #else
@@ -33,6 +36,7 @@ const char* ScaleValidation() noexcept
 
 const char* ScaleStorage(const MiciusContext* context) noexcept
 {
+    if (internal::UsesFileWeights(context)) return "gguf_native_blocks";
     if (i25::BindingStats(context).active) return "private_panel_f32_per_block";
 #if defined(MICIUS_REFERENCE_GEMV_COMPACT_SCALES)
     return "private_f32_per_block_experimental";
@@ -78,13 +82,22 @@ const char* ScoreTile() noexcept
 #endif
 }
 
-const char* InputPreparation() noexcept {
+const char* InputPreparation(const MiciusContext* context) noexcept {
+    if (internal::UsesFileWeights(context)) return "f32_activation_no_quantization";
 #if MICIUS_I1_MODE
     return "dynamic_s8_block32_rne_f64_scale";
 #elif defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
     return "f64_snapshot_per_input";
 #else
     return "inline_f32_conversion";
+#endif
+}
+const char* NumericalContract(const MiciusContext* context) noexcept {
+    if (internal::UsesFileWeights(context)) return "gguf_dequant_f32_ordered_f64_accumulation";
+#if MICIUS_I1_MODE
+    return "approximate_w8a8_i1";
+#else
+    return "q8_f64_reference";
 #endif
 }
 }

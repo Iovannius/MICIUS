@@ -7,6 +7,7 @@ import sys
 import tempfile
 
 from reference.make_fixture import make_fixture
+from reference.dense_fixture import fixture, write_gguf
 
 def main():
     driver, cli = map(lambda s: str(Path(s).resolve()), sys.argv[1:3])
@@ -31,6 +32,18 @@ def main():
         assert text.count("Unknown command.")==3 and text.count("securely bound to Engine.")==1, text
         assert "missing required tensor: blk.0.attn_q.bias" in text and "Prefill complete" in text, text
         assert "Halting MICIUS Engine" in text and len(list(cache.glob("*/contexts/*/kv")))==3
+        # The new mapped mixed-weight route must retain the same ownership and
+        # failed-replacement behavior, including two simultaneously live files.
+        mixed = root/'mixed.gguf'
+        meta,tensors,_,_=fixture(mixed,'qwen2',True,True,False)
+        subprocess.run([driver,str(mixed),str(root/'mixed-cache')],cwd=root,check=True)
+        del tensors['blk.0.attn_q.bias']
+        write_gguf(root/'bad-mixed.gguf',meta,tensors)
+        commands='load mixed.gguf\nload bad-mixed.gguf\ngenerate 3\nexit\n'
+        run=subprocess.run([cli],input=commands,text=True,encoding='utf-8',errors='replace',
+                           capture_output=True,cwd=root,env=env,check=True)
+        assert run.stdout.count('securely bound to Engine.')==1,run.stdout
+        assert 'Missing tensor: blk.0.attn_q.bias' in run.stdout and 'Prefill complete' in run.stdout,run.stdout
         print("file/parser ABI errors, memory-only option, two live contexts, reset, failed CLI replacement and aliases: PASS")
 
 if __name__=="__main__":

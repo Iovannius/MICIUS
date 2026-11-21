@@ -2,6 +2,8 @@
 #include "MiciusGGUFParser.h"
 #include "MiciusTensorCodec.h"
 #include "AI/FileTensorBinding.h"
+#include "AI/FileWeights.h"
+#include <unordered_map>
 #include "ContextDirectory.h"
 #include "FileReader.h"
 #include "app/I22LoaderLifetime.h"
@@ -121,6 +123,76 @@ float* FloatCopy(MiciusFileModel& model, const GGUFTensorInfo& t, const void* ra
     return dst;
 }
 
+
+// Dispatch is based on stored tensor kinds and architecture, never file names
+// or publisher. Legacy all-Q8 models retain their accepted W8A8/F64 bridge.
+bool NeedsFileWeights(const MiciusFileModel& model,uint32_t features) {
+    if(features & (MICIUS_GGUF_QK_NORM | MICIUS_GGUF_REQUIRE_ROPE_FACTORS))return true;
+    if(uint64_t(model.config.num_heads)*model.config.head_dim!=model.config.hidden_dim)return true;
+    const auto& tensors=model.reader.GetTensors();
+    const bool tied=std::none_of(tensors.begin(),tensors.end(),[](const auto& t){return t.name=="output.weight";});
+    for(const auto& t:model.reader.GetTensors()) {
+        if(t.name=="rope_freqs.weight")return true;
+        if(tied && t.name=="token_embd.weight" && t.type!=GGMLType::Q8_0)return true;
+        if(t.n_dims==2 && t.name!="token_embd.weight" && t.type!=GGMLType::Q8_0)return true;
+        if(t.type==GGMLType::Q4_K || t.type==GGMLType::Q6_K)return true;
+    }
+    return false;
+}
+void TranslateFileWeights(MiciusFileModel& model,uint32_t features) {
+    using namespace micius::internal;
+    std::unordered_map<std::string,const GGUFTensorInfo*> remaining;
+    for(const auto& t:model.reader.GetTensors())remaining.emplace(t.name,&t);
+    auto take=[&](const std::string& name)->const GGUFTensorInfo& {
+        auto it=remaining.find(name);
+        if(it==remaining.end())throw std::runtime_error("Missing tensor: "+name);
+        const auto* t=it->second;remaining.erase(it);return *t;
+    };
+    auto matrix=[&](const std::string& name,uint32_t rows,uint32_t cols) {
+        const auto& t=take(name);
+        if(t.n_dims!=2 || t.dimensions[0]!=cols || t.dimensions[1]!=rows)
+            throw std::runtime_error("Invalid matrix dimensions: "+name);
+        micius::quant::Matrix m{model.reader.GetTensorData(t.offset),static_cast<size_t>(t.byte_size),rows,cols,static_cast<micius::quant::Type>(t.type)};
+        if(!m.Valid())throw std::runtime_error("Invalid/nonfinite matrix data: "+name);
+        return m;
+    };
+    auto vector=[&](const std::string& name,uint32_t count) {
+        const auto& t=take(name);
+        if(t.n_dims!=1 || t.dimensions[0]!=count || (t.type!=GGMLType::F32 && t.type!=GGMLType::F16))
+            throw std::runtime_error("Invalid vector type/shape: "+name);
+        auto* out=Allocate<float>(model,count);
+        if(!micius::quant::Decode(static_cast<micius::quant::Type>(t.type),model.reader.GetTensorData(t.offset),
+            static_cast<size_t>(t.byte_size),out,count))throw std::runtime_error("Nonfinite vector: "+name);
+        return out;
+    };
+    const auto& c=model.config;const uint32_t q=c.num_heads*c.head_dim,kv=c.num_kv_heads*c.head_dim;
+    FileWeights w;w.split_half=features & MICIUS_GGUF_SPLIT_HALF_ROPE;w.qk_norm=features & MICIUS_GGUF_QK_NORM;
+    w.embedding=matrix("token_embd.weight",c.vocab_size,c.hidden_dim);
+    w.output=remaining.contains("output.weight") ? matrix("output.weight",c.vocab_size,c.hidden_dim) : w.embedding;
+    w.final_norm=vector("output_norm.weight",c.hidden_dim);
+    if(remaining.contains("rope_freqs.weight")) {
+        auto* f=vector("rope_freqs.weight",c.head_dim/2);
+        for(uint32_t i=0;i<c.head_dim/2;++i)if(!(f[i]>0))throw std::runtime_error("RoPE factors must be positive");
+        w.rope_factors=f;
+    } else if(features & MICIUS_GGUF_REQUIRE_ROPE_FACTORS)throw std::runtime_error("Scaled Llama3 requires rope_freqs.weight");
+    for(uint32_t i=0;i<c.num_layers;++i) {
+        const auto pre="blk."+std::to_string(i)+".";FileLayer l;
+        l.q=matrix(pre+"attn_q.weight",q,c.hidden_dim);l.k=matrix(pre+"attn_k.weight",kv,c.hidden_dim);
+        l.v=matrix(pre+"attn_v.weight",kv,c.hidden_dim);l.o=matrix(pre+"attn_output.weight",c.hidden_dim,q);
+        l.gate=matrix(pre+"ffn_gate.weight",c.intermediate_dim,c.hidden_dim);
+        l.up=matrix(pre+"ffn_up.weight",c.intermediate_dim,c.hidden_dim);
+        l.down=matrix(pre+"ffn_down.weight",c.hidden_dim,c.intermediate_dim);
+        l.norm_attn=vector(pre+"attn_norm.weight",c.hidden_dim);l.norm_ffn=vector(pre+"ffn_norm.weight",c.hidden_dim);
+        if(features & MICIUS_GGUF_QKV_BIAS) {
+            l.qb=vector(pre+"attn_q.bias",q);l.kb=vector(pre+"attn_k.bias",kv);l.vb=vector(pre+"attn_v.bias",kv);
+        }
+        if(w.qk_norm) {l.qnorm=vector(pre+"attn_q_norm.weight",c.head_dim);l.knorm=vector(pre+"attn_k_norm.weight",c.head_dim);}
+        w.layers.push_back(l);
+    }
+    if(!remaining.empty())throw std::runtime_error("Unconsumed tensor: "+remaining.begin()->first);
+    if(!BindFileWeights(model.engine,std::move(w)))throw std::runtime_error("File matrix binding failed");
+}
+
 void TranslateAndBind(MiciusFileModel& model, uint32_t features)
 {
     const auto& tensors = model.reader.GetTensors();
@@ -222,10 +294,15 @@ extern "C" MiciusFileModel* Micius_OpenGGUFV1(const MiciusGGUFOpenOptionsV1* o, 
         model->config = plan.config;
         if (o->context_length > model->config.max_seq_len) throw std::runtime_error("Requested context exceeds model limit");
         if (o->context_length) model->config.max_seq_len = o->context_length;
-        model->engine = Micius_CreateEngineV1(&model->config,sizeof(model->config),MICIUS_ABI_VERSION);
+        const bool compressed=NeedsFileWeights(*model,plan.features);
+        if((plan.features & MICIUS_GGUF_REQUIRE_ROPE_FACTORS) && !compressed)
+            throw std::runtime_error("Scaled Llama3 requires rope_freqs.weight");
+        model->engine = compressed ? micius::internal::CreateFileEngine(model->config) :
+            Micius_CreateEngineV1(&model->config,sizeof(model->config),MICIUS_ABI_VERSION);
         if (!model->engine) throw std::runtime_error(Micius_GetLastError());
         micius::i22::Memory("engine_allocated");
-        TranslateAndBind(*model, plan.features);
+        if(compressed)TranslateFileWeights(*model,plan.features);
+        else TranslateAndBind(*model, plan.features);
         model->identity=micius::gguf::Sha256(model->reader.FileData(),model->reader.FileSize());
         if (o->cache_root) model->directory = micius::gguf::CreateContextDirectory(o->cache_root,
             model->identity);
@@ -242,5 +319,8 @@ extern "C" void Micius_CloseGGUFV1(MiciusFileModel* model) { delete model; }
 extern "C" MiciusContext* Micius_FileEngineV1(const MiciusFileModel* model) { return model ? model->engine : nullptr; }
 extern "C" const MiciusConfig* Micius_FileConfigV1(const MiciusFileModel* model) { return model ? &model->config : nullptr; }
 extern "C" const char* Micius_FileArchitectureV1(const MiciusFileModel* model) { return model ? model->architecture.c_str() : nullptr; }
+extern "C" const char* Micius_FileWeightPathV1(const MiciusFileModel* model) {
+    return model ? (micius::internal::UsesFileWeights(model->engine) ? "gguf_block_dequant_ordered_f64" : "q8_32") : nullptr;
+}
 extern "C" const char* Micius_FileContextDirectoryV1(const MiciusFileModel* model) { return model ? model->directory.c_str() : nullptr; }
 extern "C" const char* Micius_FileIdentityV1(const MiciusFileModel* model) { return model ? model->identity.c_str() : nullptr; }

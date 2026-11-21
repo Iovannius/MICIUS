@@ -43,8 +43,12 @@ static FILE* output(const char* root,const char* name) {
 }
 int main(int argc,char** argv) {
     if(argc!=7 && argc!=8) { fprintf(stderr,"MODEL CACHE_ROOT CONTEXT ID_OR_- INPUT_UTF8 OUTPUT_DIR [NEW_CONFIG]\n");return 2; }
-    const MiciusGGUFParserV1* parsers[]={Micius_LlamaParserV1(),Micius_Qwen2ParserV1()};
-    MiciusGGUFOpenOptionsV1 o={MICIUS_GGUF_FILE_ABI,sizeof(o),argv[1],argv[2],parsers,2,(uint32_t)strtoul(argv[3],0,10)};
+    const MiciusGGUFParserV1* parsers[]={Micius_LlamaParserV1(),Micius_Qwen2ParserV1()
+#ifdef LINK_QWEN3
+        ,Micius_Qwen3ParserV1()
+#endif
+    };
+    MiciusGGUFOpenOptionsV1 o={MICIUS_GGUF_FILE_ABI,sizeof(o),argv[1],argv[2],parsers,sizeof(parsers)/sizeof(parsers[0]),(uint32_t)strtoul(argv[3],0,10)};
     char error[1024]={0};int ok=0;
     MiciusFileModel* f=Micius_OpenGGUFV1(&o,error,sizeof(error));
     if(!f) { fprintf(stderr,"%s\n",error);return 1; }

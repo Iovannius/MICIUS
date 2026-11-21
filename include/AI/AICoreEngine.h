@@ -8,6 +8,10 @@
 #include "AI/I25Binding.h"
 #include "AI/FileTensorBinding.h"
 namespace micius::i25 { struct Panels; }
+namespace micius::internal {
+struct FileWeights;
+bool BindFileWeights(MiciusContext*, FileWeights&&) noexcept;
+}
 
 #include "SchedulerCore.h"
 #include "HardwareTopology.h"
@@ -190,6 +194,7 @@ private:
     };
 
     std::unique_ptr<micius::i25::Panels> i25_panels;
+    std::unique_ptr<micius::internal::FileWeights> file_weights;
     MiciusConfig config;
     std::vector<MiciusLayerWeights> model_layers;
     std::vector<OwnedScaleBuffer> owned_scale_buffers;
@@ -269,6 +274,7 @@ private:
     uint32_t reference_seq_len = 0;
     uint32_t reference_kv_dim = 0;
     uint32_t reference_qkv_dim = 0;
+    uint32_t reference_q_dim = 0;
     size_t reference_kv_elements = 0;
     bool reference_has_logits = false;
 
@@ -286,6 +292,8 @@ private:
         uint32_t count,
         size_t entry_size,
         uint32_t abi_version, micius::internal::ProjectionSemantics);
+    friend bool micius::internal::BindFileWeights(MiciusContext*, micius::internal::FileWeights&&) noexcept;
+    bool BindFileModel(micius::internal::FileWeights&&);
 
     ReferenceStepResult RunReferenceToken(uint32_t token, uint32_t* out_token) noexcept;
     
@@ -312,6 +320,7 @@ private:
 public:
 
     micius::i25::Stats I25Stats() const noexcept;
+    bool UsesFileWeights() const noexcept { return file_weights != nullptr; }
     std::span<const micius::i25::RetiredWeight> I25Retired() const noexcept;
     int recommended_shadow_core = -1; //暴露的影子线程绑核建议
 

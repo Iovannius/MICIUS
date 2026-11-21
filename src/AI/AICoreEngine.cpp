@@ -1,4 +1,5 @@
 #include "AICoreEngine.h"
+#include "AI/FileWeights.h"
 #include "i25/ModelPanels.h"
 #if defined(MICIUS_I19_SCORE_GROUP3)
 #include "I19AttentionScore.h"
@@ -492,11 +493,12 @@ AIEngineFront::AIEngineFront(const MiciusConfig& cfg)
             const uint64_t kv_dim64 =
                 static_cast<uint64_t>(config.num_kv_heads) * config.head_dim;
             const uint64_t qkv_dim64 =
-                static_cast<uint64_t>(hidden_dim) + 2U * kv_dim64;
+                static_cast<uint64_t>(config.num_heads) * config.head_dim + 2U * kv_dim64;
             if (kv_dim64 > std::numeric_limits<uint32_t>::max() ||
                 qkv_dim64 > std::numeric_limits<uint32_t>::max()) {
                 throw std::overflow_error("reference QKV dimensions exceed uint32_t");
             }
+            reference_q_dim = config.num_heads * config.head_dim;
             reference_kv_dim = static_cast<uint32_t>(kv_dim64);
             reference_qkv_dim = static_cast<uint32_t>(qkv_dim64);
             reference_kv_elements = checked_product(
@@ -508,7 +510,7 @@ AIEngineFront::AIEngineFront(const MiciusConfig& cfg)
             reference_residual = MakeAlignedArray<float>(hidden_dim);
             reference_normed = MakeAlignedArray<float>(hidden_dim);
             reference_qkv = MakeAlignedArray<float>(reference_qkv_dim);
-            reference_attention = MakeAlignedArray<float>(hidden_dim);
+            reference_attention = MakeAlignedArray<float>(reference_q_dim);
             reference_projection = MakeAlignedArray<float>(hidden_dim);
             reference_gate = MakeAlignedArray<float>(config.intermediate_dim);
             reference_up = MakeAlignedArray<float>(config.intermediate_dim);
@@ -538,7 +540,7 @@ AIEngineFront::AIEngineFront(const MiciusConfig& cfg)
             std::fill_n(reference_residual.get(), hidden_dim, 0.0f);
             std::fill_n(reference_normed.get(), hidden_dim, 0.0f);
             std::fill_n(reference_qkv.get(), reference_qkv_dim, 0.0f);
-            std::fill_n(reference_attention.get(), hidden_dim, 0.0f);
+            std::fill_n(reference_attention.get(), reference_q_dim, 0.0f);
             std::fill_n(reference_projection.get(), hidden_dim, 0.0f);
             std::fill_n(reference_gate.get(), config.intermediate_dim, 0.0f);
             std::fill_n(reference_up.get(), config.intermediate_dim, 0.0f);
@@ -1382,7 +1384,7 @@ bool AIEngineFront::ResetState() noexcept
     std::fill_n(reference_residual.get(), hidden_dim, 0.0f);
     std::fill_n(reference_normed.get(), hidden_dim, 0.0f);
     std::fill_n(reference_qkv.get(), reference_qkv_dim, 0.0f);
-    std::fill_n(reference_attention.get(), hidden_dim, 0.0f);
+    std::fill_n(reference_attention.get(), reference_q_dim, 0.0f);
     std::fill_n(reference_projection.get(), hidden_dim, 0.0f);
     std::fill_n(reference_gate.get(), config.intermediate_dim, 0.0f);
     std::fill_n(reference_up.get(), config.intermediate_dim, 0.0f);
@@ -1403,8 +1405,8 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
     MICIUS_D1_SCOPE(micius::d1::Part::Forward);
     if (speculative_enabled || !model_bound ||
         model_layers.size() != config.num_layers ||
-        !token_embd_weight || !norm_weight_final ||
-        (!i25_panels && (!engine_quant_weights ||
+        (!file_weights && !token_embd_weight) || !norm_weight_final ||
+        (!file_weights && !i25_panels && (!engine_quant_weights ||
         !HasReferenceScales(engine_scales, engine_compact_scales)))) {
         return ReferenceStepResult::MODEL_NOT_BOUND;
     }
@@ -1529,15 +1531,19 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
 #endif
 
     const uint32_t position = reference_seq_len;
-    const uint32_t q_dim = hidden_dim;
+    const uint32_t q_dim = reference_q_dim;
     const uint32_t kv_dim = reference_kv_dim;
     const double attention_score_denominator =
         std::sqrt(static_cast<double>(config.head_dim));
 
+    if (file_weights) {
+        if (!file_weights->embedding.Row(token,reference_residual.get())) return ReferenceStepResult::NUMERIC_ERROR;
+    } else {
     const float* embedding = token_embd_weight + static_cast<size_t>(token) * hidden_dim;
     for (uint32_t i = 0; i < hidden_dim; ++i) {
         if (!std::isfinite(embedding[i])) return ReferenceStepResult::NUMERIC_ERROR;
         reference_residual[i] = embedding[i];
+    }
     }
 #if defined(MICIUS_I2_DIAGNOSTICS)
     if (!i2.boundary(-1,"embedding",reference_residual.get(),hidden_dim)) return ReferenceStepResult::INVALID_MODEL_DATA;
@@ -1548,7 +1554,8 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
 
     for (uint32_t layer_index = 0; layer_index < config.num_layers; ++layer_index) {
         const MiciusLayerWeights& layer = model_layers[layer_index];
-        if ((!i25_panels && (!layer.qkv_packed_weights ||
+        const auto* fw = file_weights ? &file_weights->layers[layer_index] : nullptr;
+        if ((!file_weights && !i25_panels && (!layer.qkv_packed_weights ||
             !HasReferenceScales(
                 layer.qkv_packed_scales, layer.qkv_packed_compact_scales) ||
             !layer.o_weight ||
@@ -1584,7 +1591,13 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
 #if defined(MICIUS_I25_PANEL_GEMV)
         panel=i25_panels ? &i25_panels->matrices[size_t(layer_index)*5U+0U] : nullptr;
 #endif
-        math_status = gemv(
+        if (fw) {
+            if (!fw->q.Multiply(reference_normed.get(),reference_qkv.get()) ||
+                !fw->k.Multiply(reference_normed.get(),reference_qkv.get()+q_dim) ||
+                !fw->v.Multiply(reference_normed.get(),reference_qkv.get()+q_dim+kv_dim))
+                return ReferenceStepResult::NUMERIC_ERROR;
+            math_status=ReferenceMathStatus::OK;
+        } else math_status = gemv(
             layer.qkv_packed_weights,
             layer.qkv_packed_scales,
             layer.qkv_packed_compact_scales,
@@ -1608,6 +1621,18 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
                 key[j] += layer.k_bias[j];
                 value[j] += layer.v_bias[j];
                 if (!std::isfinite(value[j])) return ReferenceStepResult::NUMERIC_ERROR;
+            }
+        }
+        if (fw && file_weights->qk_norm) {
+            for (uint32_t h=0;h<config.num_heads;++h) {
+                auto* x=query+size_t(h)*config.head_dim;
+                math_status=ReferenceRMSNorm(x,x,fw->qnorm,config.head_dim,config.rms_norm_epsilon);
+                if(math_status!=ReferenceMathStatus::OK)return ToStepResult(math_status);
+            }
+            for (uint32_t h=0;h<config.num_kv_heads;++h) {
+                auto* x=key+size_t(h)*config.head_dim;
+                math_status=ReferenceRMSNorm(x,x,fw->knorm,config.head_dim,config.rms_norm_epsilon);
+                if(math_status!=ReferenceMathStatus::OK)return ToStepResult(math_status);
             }
         }
         math_status = ReferenceApplyRoPE(query, rope_cache, position, config.num_heads, layer.split_half_rope);
@@ -1844,7 +1869,7 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
 #if defined(MICIUS_I25_PANEL_GEMV)
         panel=i25_panels ? &i25_panels->matrices[size_t(layer_index)*5U+1U] : nullptr;
 #endif
-        math_status = gemv(
+        math_status = fw ? (fw->o.Multiply(reference_attention.get(),reference_projection.get()) ? ReferenceMathStatus::OK : ReferenceMathStatus::NUMERIC_ERROR) : gemv(
             layer.o_weight,
             layer.o_scales,
             layer.o_compact_scales,
@@ -1883,12 +1908,13 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
             !i3.start_ffn(layer_index,reference_normed.get(),hidden_dim)) return ReferenceStepResult::INVALID_MODEL_DATA;
 #endif
         micius::internal::PreparedW8A8Input ffn_prepared;
-        const auto i1_status=prepare_i1(reference_normed.get(),hidden_dim,ffn_prepared);
+        const auto i1_status=fw ? Q8_32_GEMVStatus::OK : prepare_i1(reference_normed.get(),hidden_dim,ffn_prepared);
         if (i1_status!=Q8_32_GEMVStatus::OK)
             return i1_status==Q8_32_GEMVStatus::NUMERIC_ERROR ? ReferenceStepResult::NUMERIC_ERROR : ReferenceStepResult::INVALID_MODEL_DATA;
 #elif defined(MICIUS_REFERENCE_GEMV_PREPARED_F64)
         micius::internal::PreparedF64GEMVInput ffn_prepared;
         const auto preparation_status = [&]() {
+            if(fw)return Q8_32_GEMVStatus::OK;
             MICIUS_D1_SCOPE(micius::d1::Part::PrepFFN);
             return micius::internal::PrepareF64GEMVInput(
                 {reference_normed.get(), hidden_dim},
@@ -1914,7 +1940,7 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
 #if defined(MICIUS_I25_PANEL_GEMV)
         panel=i25_panels ? &i25_panels->matrices[size_t(layer_index)*5U+2U] : nullptr;
 #endif
-        math_status = gemv(
+        math_status = fw ? (fw->gate.Multiply(reference_normed.get(),reference_gate.get()) ? ReferenceMathStatus::OK : ReferenceMathStatus::NUMERIC_ERROR) : gemv(
             layer.gate_weight,
             layer.gate_scales,
             layer.gate_compact_scales,
@@ -1941,7 +1967,7 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
 #if defined(MICIUS_I25_PANEL_GEMV)
         panel=i25_panels ? &i25_panels->matrices[size_t(layer_index)*5U+3U] : nullptr;
 #endif
-        math_status = gemv(
+        math_status = fw ? (fw->up.Multiply(reference_normed.get(),reference_up.get()) ? ReferenceMathStatus::OK : ReferenceMathStatus::NUMERIC_ERROR) : gemv(
             layer.up_weight,
             layer.up_scales,
             layer.up_compact_scales,
@@ -1986,7 +2012,7 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
 #if defined(MICIUS_I25_PANEL_GEMV)
         panel=i25_panels ? &i25_panels->matrices[size_t(layer_index)*5U+4U] : nullptr;
 #endif
-        math_status = gemv(
+        math_status = fw ? (fw->down.Multiply(reference_gate.get(),reference_projection.get()) ? ReferenceMathStatus::OK : ReferenceMathStatus::NUMERIC_ERROR) : gemv(
             layer.down_weight,
             layer.down_scales,
             layer.down_compact_scales,
@@ -2036,7 +2062,7 @@ ReferenceStepResult AIEngineFront::RunReferenceToken(
 #if defined(MICIUS_I25_PANEL_GEMV)
     panel=i25_panels ? &i25_panels->matrices.back() : nullptr;
 #endif
-    math_status = gemv(
+    math_status = file_weights ? (file_weights->output.Multiply(reference_normed.get(),reference_logits.get()) ? ReferenceMathStatus::OK : ReferenceMathStatus::NUMERIC_ERROR) : gemv(
         engine_quant_weights,
         engine_scales,
         engine_compact_scales,
@@ -2420,4 +2446,29 @@ micius::i25::Stats AIEngineFront::I25Stats() const noexcept {
 }
 std::span<const micius::i25::RetiredWeight> AIEngineFront::I25Retired() const noexcept {
     return i25_panels ? std::span<const micius::i25::RetiredWeight>(i25_panels->retired) : std::span<const micius::i25::RetiredWeight>{};
+}
+
+// Only a fresh file context enters this path. All borrowed storage is owned by
+// its MiciusFileModel and outlives the engine. No expanded model-sized shadow.
+bool AIEngineFront::BindFileModel(micius::internal::FileWeights&& weights) {
+    if(model_bound || speculative_enabled || weights.layers.size()!=config.num_layers)return false;
+    std::vector<MiciusLayerWeights> layers(config.num_layers);
+    for(size_t i=0;i<layers.size();++i) {
+        const auto& w=weights.layers[i]; auto& l=layers[i];
+        l.rms_attn_weight=w.norm_attn;l.rms_ffn_weight=w.norm_ffn;
+        l.q_bias=w.qb;l.k_bias=w.kb;l.v_bias=w.vb;l.split_half_rope=weights.split_half;
+    }
+    auto owned=std::make_unique<micius::internal::FileWeights>(std::move(weights));
+    if(owned->rope_factors) {
+        for(uint32_t pos=0;pos<config.max_seq_len;++pos) for(uint32_t i=0;i<config.head_dim;i+=2) {
+            const float angle=(float(pos)/std::pow(config.rope_freq_base,float(i)/float(config.head_dim)))/owned->rope_factors[i/2];
+            if(!std::isfinite(angle))return false;
+            const size_t offset=size_t(pos)*config.head_dim+i;
+            rope_cache.cos_table[offset]=rope_cache.cos_table[offset+1]=std::cos(angle);
+            rope_cache.sin_table[offset]=rope_cache.sin_table[offset+1]=std::sin(angle);
+        }
+    }
+    norm_weight_final=owned->final_norm;
+    model_layers=std::move(layers);file_weights=std::move(owned);model_bound=true;
+    return ResetState();
 }

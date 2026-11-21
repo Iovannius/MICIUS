@@ -112,7 +112,7 @@ def main():
         shutil.copyfile(path, stage / name)
     clean_env = dict(os.environ, PATH=str(Path(os.environ['SystemRoot'])/'System32'))
     run('standalone-version', [stage/exe.name, '--version'], cwd=stage, env=clean_env)
-    receipt = {'release': '0.7.2', 'preset': 'int8-release-windows',
+    receipt = {'release': '0.7.3', 'preset': 'int8-release-windows',
                'source_manifest_sha256': hashlib.sha256(MANIFEST.read_bytes()).hexdigest(),
                'files': {name: hashlib.sha256((stage/name).read_bytes()).hexdigest() for name in sorted(runtime)}}
     (stage/'BUILD-RECEIPT.json').write_text(json.dumps(receipt, indent=2)+'\n', encoding='utf-8')

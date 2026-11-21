@@ -1,6 +1,7 @@
 #include "micius_session.h"
 #include "micius_state.h"
 #include "session/Storage.h"
+#include "session/Session.h"
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -56,6 +57,7 @@ int main(int argc,char** argv) { try {
     std::string answer;MiciusChatResultV1 r={MICIUS_SESSION_ABI_V1,sizeof(r),0,0,0};
     Check(Micius_ChatReplyV1(s,"first",5,8,Emit,&answer,&r,error,sizeof(error)),error);
     Check(Micius_SaveChatV1(s,error,sizeof(error)),error);
+    Check(Session::List(a.get()).find(id+"  saved")!=std::string::npos,"saved context list status");
     auto live=State(engine);auto saved=ReadFile(dir/"kv/chat.mcs",1<<24);
     auto conf=ReadFile(dir/"sampling.conf",16384);
     AtomicText(dir/"sampling.conf","version=1\ntemperature=nan\n");

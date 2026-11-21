@@ -4,7 +4,7 @@ namespace {
 int Describe(const MiciusGGUFMetadataV1* view, MiciusGGUFPlanV1* plan) noexcept
 {
     try {
-        return micius::gguf::DescribeDecoder(view, plan, "llama", 0);
+        return micius::gguf::DescribeDecoder(view, plan, "llama", MICIUS_GGUF_ROPE_FACTORS);
     } catch (...) {
         return 0;
     }

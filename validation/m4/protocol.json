@@ -1,0 +1,69 @@
+{
+  "unit": "M4",
+  "scope": "Dense GGUF functional qualification; synthetic numerical references and real-model replay are separate; no performance claim",
+  "base_release": "0.7.2",
+  "base_source_zip_sha256": "9ef6f5af86531bfb9780e33fef42105ccf2e74aa63329f8d05deb5a880056f65",
+  "context": 512,
+  "messages": [
+    "Reply with only the word blue.",
+    "刚才说的颜色是什么？ Reply with one word."
+  ],
+  "models": {
+    "smol": {
+      "filename": "smollm2-360m-instruct-q8_0.gguf",
+      "bytes": 386404992,
+      "model_sha256": "48ab3034d0dd401fbc721eb1df3217902fee7dab9078992d66431f09b7750201"
+    },
+    "qwen": {
+      "filename": "qwen2.5-1.5b-instruct-q8_0.gguf",
+      "bytes": 1894532128,
+      "model_sha256": "d7efb072e7724d25048a4fda0a3e10b04bdef5d06b1403a1c93bd9f1240a63c8"
+    }
+  },
+  "sampling": {
+    "greedy": {
+      "version": 1,
+      "temperature": 0,
+      "top_k": 0,
+      "top_p": 1,
+      "repeat_penalty": 1,
+      "repeat_last_n": 0,
+      "seed": 20261107,
+      "max_new_tokens": 32
+    },
+    "seeded": {
+      "version": 1,
+      "temperature": 0.7,
+      "top_k": 40,
+      "top_p": 0.9,
+      "repeat_penalty": 1.1,
+      "repeat_last_n": 64,
+      "seed": 20261107,
+      "max_new_tokens": 32
+    }
+  },
+  "required": [
+    "All eight model/backend/sampling cases complete with native exit code zero",
+    "Four greedy two-turn outputs exactly reproduce their accepted M2 records",
+    "Uninterrupted and resumed replies, history, active KV, logits, config and RNG are byte-identical",
+    "Reset replays first-turn output and numerical state; only the lifetime generation diagnostic counter may differ",
+    "Reset of one conversation does not change the other conversation snapshot",
+    "Model, package and executable identities remain unchanged",
+    "Interrupted or incomplete runs are never resumed into an accepted result",
+    "Additional models are explicitly supplied by the operator and sealed by SHA-256 before and after the run",
+    "Each additional model/backend produces eight finite full-logit rows, exact reset replay and exact independent-process replay",
+    "Optional --chat-dense requires known-template chat and cross-process snapshot replay for all selected models",
+    "Without additional models, the result must retain NEW_MODELS_PENDING",
+    "Real-model replay is not an independent numerical reference, quality evaluation or performance acceptance"
+  ],
+  "dense_tokens": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8
+  ]
+}

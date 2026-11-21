@@ -12,6 +12,9 @@ extern "C" {
 #define MICIUS_GGUF_FILE_ABI   UINT32_C(0x00010000)
 #define MICIUS_GGUF_SPLIT_HALF_ROPE UINT32_C(1)
 #define MICIUS_GGUF_QKV_BIAS        UINT32_C(2)
+#define MICIUS_GGUF_QK_NORM         UINT32_C(4)
+#define MICIUS_GGUF_ROPE_FACTORS    UINT32_C(8)
+#define MICIUS_GGUF_REQUIRE_ROPE_FACTORS UINT32_C(16)
 
 /* All metadata pointers are borrowed for the describe call. Getters return
  * 1 on success, 0 for an absent key, -1 for a present key of another type. */
@@ -41,6 +44,7 @@ typedef struct {
 /* Each factory belongs to its own optional static library. */
 const MiciusGGUFParserV1* Micius_LlamaParserV1(void);
 const MiciusGGUFParserV1* Micius_Qwen2ParserV1(void);
+const MiciusGGUFParserV1* Micius_Qwen3ParserV1(void);
 
 typedef struct MiciusFileModel MiciusFileModel;
 typedef struct {
@@ -63,6 +67,9 @@ void Micius_CloseGGUFV1(MiciusFileModel* model);
 MiciusContext* Micius_FileEngineV1(const MiciusFileModel* model);
 const MiciusConfig* Micius_FileConfigV1(const MiciusFileModel* model);
 const char* Micius_FileArchitectureV1(const MiciusFileModel* model);
+/* Actual matrix route: "q8_32" or "gguf_block_dequant_ordered_f64".
+ * Describes arithmetic, not a performance or quality qualification. */
+const char* Micius_FileWeightPathV1(const MiciusFileModel* model);
 const char* Micius_FileContextDirectoryV1(const MiciusFileModel* model);
 /* SHA-256 of the complete GGUF content, borrowed until close. */
 const char* Micius_FileIdentityV1(const MiciusFileModel* model);

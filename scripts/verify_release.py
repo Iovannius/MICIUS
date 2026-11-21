@@ -1,4 +1,4 @@
-"""Verify the v0.7.2 release, including complete source-directory file sets."""
+"""Verify the v0.7.3 release, including complete source-directory file sets."""
 import hashlib
 import json
 from pathlib import Path
@@ -9,8 +9,8 @@ MANIFEST = Path(__file__).resolve().parents[1] / "RELEASE-MANIFEST.json"
 def verify():
     root = MANIFEST.parent
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    if manifest["release"] != "0.7.2":
-        raise SystemExit("Expected the MICIUS v0.7.2 release manifest")
+    if manifest["release"] != "0.7.3":
+        raise SystemExit("Expected the MICIUS v0.7.3 release manifest")
     expected = manifest["files"]
     names = {"CMakeLists.txt", "CMakePresets.json", ".gitattributes", ".gitignore", "LICENSE", "README.md"}
     for folder in ("src","include","scripts","tests","docs","cmake","examples","validation"):
@@ -39,8 +39,8 @@ def verify():
             if hashlib.sha256(data).hexdigest() != expected[name]:
                 errors.append("modified: " + name)
     if errors:
-        raise SystemExit("v0.7.2 source check failed\n" + "\n".join(errors))
-    print(f"v0.7.2 source check passed ({len(expected)} distribution files)")
+        raise SystemExit("v0.7.3 source check failed\n" + "\n".join(errors))
+    print(f"v0.7.3 source check passed ({len(expected)} distribution files)")
 
 
 if __name__ == "__main__":

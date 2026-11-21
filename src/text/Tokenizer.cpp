@@ -69,6 +69,10 @@ const Pattern& QwenPattern()
 {
     static const Pattern p(R"re((?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re"); return p;
 }
+const Pattern& LlamaPattern()
+{
+    static const Pattern p(R"re((?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+)re"); return p;
+}
 const Pattern& SmolPattern()
 {
     static const Pattern p(R"re('s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+)re"); return p;
@@ -110,9 +114,11 @@ std::string FromAlphabet(std::string_view token, const std::array<int,512>& reve
 Tokenizer::Tokenizer(const GGUFParser& reader)
 {
     const auto pre = reader.TextString("tokenizer.ggml.pre");
-    Require(reader.TextString("tokenizer.ggml.model")=="gpt2" && (pre=="smollm" || pre=="qwen2"),
-            "Text requires GGUF byte-BPE with smollm or qwen2 preprocessing");
-    for (auto key : {"tokenizer.ggml.add_bos_token","tokenizer.ggml.add_eos_token","tokenizer.ggml.add_space_prefix"})
+    llama3 = pre=="llama-bpe" || pre=="llama3";
+    Require(reader.TextString("tokenizer.ggml.model")=="gpt2" && (pre=="smollm" || pre=="qwen2" || llama3),
+            "Unsupported GGUF byte-BPE preprocessing profile");
+    Require(llama3 || !reader.TextFlag("tokenizer.ggml.add_bos_token"),"Unsupported implicit BOS");
+    for (auto key : {"tokenizer.ggml.add_eos_token","tokenizer.ggml.add_space_prefix"})
         Require(!reader.TextFlag(key),"Unsupported implicit special token or prefix space");
     qwen = pre=="qwen2";
     const auto& words = reader.GetVocab();
@@ -145,11 +151,18 @@ Tokenizer::Tokenizer(const GGUFParser& reader)
             "Incomplete basic text alphabet in the GGUF vocabulary");
     auto control=[&](const char* word) {
         const auto it=ids.find(word);
-        Require(it!=ids.end() && kinds[it->second]==3,"Missing ChatML control token");
+        Require(it!=ids.end() && kinds[it->second]==3,"Missing chat control token");
         return it->second;
     };
-    start=control("<|im_start|>"); end=control("<|im_end|>"); end_of_text=control("<|endoftext|>");
-    Require(reader.TextUint("tokenizer.ggml.eos_token_id")==end,"Unsupported chat EOS");
+    if (llama3) {
+        bos=control("<|begin_of_text|>"); start=control("<|start_header_id|>");
+        header_end=control("<|end_header_id|>"); end=control("<|eot_id|>"); end_of_text=control("<|end_of_text|>");
+        Require(reader.TextUint("tokenizer.ggml.bos_token_id")==bos,"Unsupported Llama BOS");
+    } else {
+        start=control("<|im_start|>"); end=control("<|im_end|>"); end_of_text=control("<|endoftext|>");
+    }
+    const auto eos=reader.TextUint("tokenizer.ggml.eos_token_id");
+    Require(eos==end || (llama3 && eos==end_of_text),"Unsupported chat EOS");
     auto ranks=reader.MergesRecord();
     Require(Take<uint32_t>(ranks)==8,"Expected an array of BPE merge strings");
     const uint64_t count=Take<uint64_t>(ranks);
@@ -169,10 +182,22 @@ Tokenizer::Tokenizer(const GGUFParser& reader)
     const auto tmpl=reader.TextString("tokenizer.chat_template");
     if (!tmpl.empty()) {
         const auto hash=gguf::Sha256(tmpl.data(),tmpl.size());
-        if (!qwen && hash=="872be49dbb638044ad01b60388f48d469ff2980e5f0dccdc22ec907db54d0788")
+        if (!qwen && !llama3 && hash=="872be49dbb638044ad01b60388f48d469ff2980e5f0dccdc22ec907db54d0788")
             system_message="You are a helpful AI assistant named SmolLM, trained by Hugging Face";
         if (qwen && hash=="d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4")
             system_message="You are Qwen, created by Alibaba Cloud. You are a helpful assistant.";
+        chat_supported = !system_message.empty();
+        // Fixed no-tools/non-thinking profiles. The second template expresses
+        // the same string operations with slices and first/last filters.
+        if (qwen && (hash=="87a2728cb8dc9fe424d624542f6060ec05a1d285ebbec578bb078900e33396b5" ||
+                     hash=="5595e8741bb5500f9d395e05a0aefe6ca1e8d54c5dd8b98bcf7760d895fdc6e6")) {
+            qwen3=true; chat_supported=true;
+        }
+        if (llama3 && (hash=="e10ca381b1ccc5cf9db52e371f3b6651576caee0a630b452e2816b2d404d4b65" || hash=="5816fce10444e03c2e9ee1ef8a4a1ea61ae7e69e438613f3b17b69d0426223a4" || hash=="e10ca381b1ccc5cf9db52e371f3b6651576caee0a630b452e2816b2d404d4b65")) {
+            chat_supported=true;
+            // Template default date, fixed rather than dependent on wall clock.
+            system_message="Cutting Knowledge Date: December 2023\nToday Date: 26 Jul 2024\n\n";
+        }
     }
 }
 
@@ -228,7 +253,8 @@ std::vector<uint32_t> Tokenizer::Encode(std::string_view text) const
             }
         }
         const auto normal=text.substr(0,boundary);
-        if (qwen) QwenPattern().Each(normal,emit);
+        if (llama3) LlamaPattern().Each(normal,emit);
+        else if (qwen) QwenPattern().Each(normal,emit);
         else NumberPattern().Each(normal,[&](std::string_view s,int captured) {
             if (captured==2) MergePiece(s,out); else SmolPattern().Each(s,emit);
         });
@@ -247,7 +273,7 @@ std::string_view Tokenizer::Piece(uint32_t id) const
 
 std::vector<uint32_t> Tokenizer::EndTurn() const
 {
-    auto ids=Encode("\n");
+    auto ids=llama3 ? std::vector<uint32_t>{} : Encode("\n");
     ids.insert(ids.begin(),end);
     return ids;
 }
@@ -264,9 +290,28 @@ std::vector<uint32_t> Tokenizer::Prompt(bool first, std::string_view user) const
         std::string payload(role); payload.push_back('\n'); payload.append(body);
         append(Encode(payload)); append(EndTurn());
     };
-    if (first) message("system",system_message);
-    message("user",user);
-    ids.push_back(start); append(Encode("assistant\n"));
+    if (llama3) {
+        auto header=[&](const char* role) { ids.push_back(start); append(Encode(role)); ids.push_back(header_end); append(Encode("\n\n")); };
+        if (first) { ids.push_back(bos); header("system"); append(Encode(system_message)); ids.push_back(end); }
+        // Jinja trim for ordinary Unicode whitespace, as used by these profiles.
+        // Trim UTF-8 codepoints without altering internal whitespace.
+        auto whitespace=[](uint32_t c) { return (c>=9 && c<=13) || (c>=0x1c && c<=0x20) || c==0x85 || c==0xa0 || c==0x1680 || (c>=0x2000 && c<=0x200a) || c==0x2028 || c==0x2029 || c==0x202f || c==0x205f || c==0x3000; };
+        size_t first_byte=user.size(), last_byte=0;
+        // Encode validates UTF-8 before the small boundary decoder below.
+        (void)Encode(user);
+        for (size_t p=0;p<user.size();) {
+            size_t begin=p; uint32_t c=static_cast<unsigned char>(user[p++]);
+            if(c>=0xc0) { unsigned n=c<0xe0?1:c<0xf0?2:3; c&=(1u<<(6-n))-1; while(n--)c=(c<<6)|(static_cast<unsigned char>(user[p++])&63); }
+            if(!whitespace(c)) { if(first_byte==user.size())first_byte=begin; last_byte=p; }
+        }
+        header("user"); if(last_byte)append(Encode(user.substr(first_byte,last_byte-first_byte))); ids.push_back(end); header("assistant");
+    } else {
+        if (first && !qwen3) message("system",system_message);
+        message("user",user);
+        ids.push_back(start); append(Encode("assistant\n"));
+        // Explicit non-thinking, no-tools subset of the recognized Qwen3 template.
+        if(qwen3)append(Encode("<think>\n\n</think>\n\n"));
+    }
     return ids;
 }
 }

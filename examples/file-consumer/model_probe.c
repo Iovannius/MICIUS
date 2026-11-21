@@ -5,6 +5,41 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <wchar.h>
+#endif
+
+/* Evidence paths use the SDK's UTF-8, absolute/extended Windows semantics. */
+static FILE* open_file(const char* name, const char* mode)
+{
+#ifdef _WIN32
+    int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name, -1, NULL, 0);
+    if (!n) return NULL;
+    wchar_t* wide = (wchar_t*)malloc((size_t)n * sizeof(wchar_t));
+    if (!wide) return NULL;
+    if (!MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name, -1, wide, n)) {
+        free(wide); return NULL;
+    }
+    for (int i = 0; i < n; ++i) if (wide[i] == L'/') wide[i] = L'\\';
+    DWORD size = GetFullPathNameW(wide, 0, NULL, NULL);
+    wchar_t* absolute = size ? (wchar_t*)malloc((size_t)size * sizeof(wchar_t)) : NULL;
+    DWORD used = absolute ? GetFullPathNameW(wide, size, absolute, NULL) : 0;
+    free(wide);
+    if (!used || used >= size) { free(absolute); return NULL; }
+    wchar_t* path = (wchar_t*)malloc(((size_t)size + 8) * sizeof(wchar_t));
+    if (!path) { free(absolute); return NULL; }
+    if (!wcsncmp(absolute, L"\\\\?\\", 4)) wcscpy(path, absolute);
+    else if (!wcsncmp(absolute, L"\\\\", 2)) {
+        wcscpy(path, L"\\\\?\\UNC\\"); wcscat(path, absolute + 2);
+    } else { wcscpy(path, L"\\\\?\\"); wcscat(path, absolute); }
+    FILE* file = _wfopen(path, mode[0] == 'r' ? L"rb" : L"wb");
+    free(path); free(absolute);
+    return file;
+#else
+    return fopen(name, mode);
+#endif
+}
 
 static int check(MiciusFileModel* model, const uint32_t* ids, size_t n, FILE* output)
 {
@@ -49,8 +84,8 @@ int main(int argc, char** argv)
         fprintf(stderr,"usage: micius_model_probe MODEL CACHE_ROOT INPUT_U32 OUTPUT_F32\n");
         return 2;
     }
-    FILE* input = fopen(argv[3],"rb");
-    if (!input) return 2;
+    FILE* input = open_file(argv[3],"rb");
+    if (!input) { fprintf(stderr,"cannot open token input\n"); return 2; }
     uint32_t ids[2048];
     size_t bytes = fread(ids,1,sizeof(ids),input);
     int valid = bytes && bytes%4 == 0 && fgetc(input)==EOF && !ferror(input);
@@ -63,6 +98,9 @@ int main(int argc, char** argv)
 #ifdef LINK_QWEN2
         Micius_Qwen2ParserV1(),
 #endif
+#ifdef LINK_QWEN3
+        Micius_Qwen3ParserV1(),
+#endif
     };
     const uint32_t steps = (uint32_t)(bytes/sizeof(ids[0]));
     MiciusGGUFOpenOptionsV1 options = {MICIUS_GGUF_FILE_ABI,sizeof(options),argv[1],argv[2],
@@ -71,7 +109,9 @@ int main(int argc, char** argv)
     MiciusFileModel* model = Micius_OpenGGUFV1(&options,diagnostic,sizeof(diagnostic));
     if (!model) { fprintf(stderr,"%s\n",diagnostic); return 1; }
     printf("architecture=%s\ncontext_directory=%s\n",Micius_FileArchitectureV1(model),Micius_FileContextDirectoryV1(model));
-    FILE* out = fopen(argv[4],"wb");
+    printf("weight_path=%s\nvocab=%u\n",Micius_FileWeightPathV1(model),Micius_FileConfigV1(model)->vocab_size);
+    FILE* out = open_file(argv[4],"wb");
+    if (!out) fprintf(stderr,"cannot open logits output\n");
     int ok = out && check(model,ids,steps,out);
     if (out && fclose(out) != 0) ok = 0;
     if (!ok) fprintf(stderr,"model functional check failed: %s\n",Micius_GetLastError());

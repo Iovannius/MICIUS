@@ -24,6 +24,8 @@ enum class GGMLType : uint32_t {
     F32  = 0,
     F16  = 1,
     Q4_0 = 2,
+    Q4_K = 12,
+    Q6_K = 14,
     Q8_0 = 8, //这是引擎原生支持的INT8
 };
 

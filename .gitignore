@@ -44,3 +44,6 @@ __pycache__/
 # Standalone CLI output (scripts/build-cli.sh)
 /micius_cli/
 /.micius_cli-staging-*/
+
+# Locally packed CLI demo
+/micius_cli.zip

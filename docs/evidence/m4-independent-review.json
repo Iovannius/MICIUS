@@ -1,0 +1,167 @@
+{
+  "status": "M4_P1_SELECTED_REAL_MODEL_FUNCTIONAL_AUDIT_PASS",
+  "run": "m4-20261121-175700-04111f58",
+  "audited_date": "2026-11-21",
+  "source_sha256": "96960284818e5a61604eeb7b36658aa4db375aa3dec3c54ede8fce6874d70a76",
+  "source_files_matched": 312,
+  "result_sha256": "20d3fc650fff0b4fd5715f79628916c5f2cbc16590d3c3a790953ebf93e45fd6",
+  "ctest": {
+    "INT8": 33,
+    "F64": 26
+  },
+  "metadata_calls": 12,
+  "q8_cases": 8,
+  "new_forward_cases": 4,
+  "new_chat_cases": 8,
+  "formal_native_calls": 72,
+  "greedy_M2_matches": 4,
+  "evidence_files_verified": 1000,
+  "chat_checks": {
+    "F64-qwen-greedy": "PASS",
+    "F64-qwen-seeded": "PASS",
+    "F64-smol-greedy": "PASS",
+    "F64-smol-seeded": "PASS",
+    "INT8-qwen-greedy": "PASS",
+    "INT8-qwen-seeded": "PASS",
+    "INT8-smol-greedy": "PASS",
+    "INT8-smol-seeded": "PASS",
+    "F64-additional-1-greedy": "PASS",
+    "F64-additional-1-seeded": "PASS",
+    "F64-additional-2-greedy": "PASS",
+    "F64-additional-2-seeded": "PASS",
+    "INT8-additional-1-greedy": "PASS",
+    "INT8-additional-1-seeded": "PASS",
+    "INT8-additional-2-greedy": "PASS",
+    "INT8-additional-2-seeded": "PASS"
+  },
+  "additional_forward": {
+    "INT8-additional-1": {
+      "architecture": "llama",
+      "weight_path": "gguf_block_dequant_ordered_f64",
+      "vocab": "128256",
+      "status": "FUNCTIONAL_PASS",
+      "steps": 8,
+      "logits_sha256": "290d882ca8a313c6b35a553788db667bae08e22f222864e8c6444aef32bad7a3",
+      "reset_replay": true,
+      "process_replay": true,
+      "independent_real_numerical_reference": false,
+      "model_sha256": "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83"
+    },
+    "F64-additional-1": {
+      "architecture": "llama",
+      "weight_path": "gguf_block_dequant_ordered_f64",
+      "vocab": "128256",
+      "status": "FUNCTIONAL_PASS",
+      "steps": 8,
+      "logits_sha256": "290d882ca8a313c6b35a553788db667bae08e22f222864e8c6444aef32bad7a3",
+      "reset_replay": true,
+      "process_replay": true,
+      "independent_real_numerical_reference": false,
+      "model_sha256": "6f85a640a97cf2bf5b8e764087b1e83da0fdb51d7c9fab7d0fece9385611df83"
+    },
+    "INT8-additional-2": {
+      "architecture": "qwen3",
+      "weight_path": "gguf_block_dequant_ordered_f64",
+      "vocab": "151936",
+      "status": "FUNCTIONAL_PASS",
+      "steps": 8,
+      "logits_sha256": "766ac642545e6991039f68e4928cc0d120855ac216c3e1906150ed3895288213",
+      "reset_replay": true,
+      "process_replay": true,
+      "independent_real_numerical_reference": false,
+      "model_sha256": "9acfc1e001311f34b4252001b626f2e466d592a42065f66571bff3790d4e1b14"
+    },
+    "F64-additional-2": {
+      "architecture": "qwen3",
+      "weight_path": "gguf_block_dequant_ordered_f64",
+      "vocab": "151936",
+      "status": "FUNCTIONAL_PASS",
+      "steps": 8,
+      "logits_sha256": "766ac642545e6991039f68e4928cc0d120855ac216c3e1906150ed3895288213",
+      "reset_replay": true,
+      "process_replay": true,
+      "independent_real_numerical_reference": false,
+      "model_sha256": "9acfc1e001311f34b4252001b626f2e466d592a42065f66571bff3790d4e1b14"
+    }
+  },
+  "replies_utf8_or_escaped": {
+    "F64-qwen-greedy": [
+      "Blue",
+      "Blue"
+    ],
+    "F64-qwen-seeded": [
+      "Blue",
+      "蓝"
+    ],
+    "F64-smol-greedy": [
+      "Blue.",
+      "Blue."
+    ],
+    "F64-smol-seeded": [
+      "Blue",
+      "Blue"
+    ],
+    "INT8-qwen-greedy": [
+      "Blue",
+      "Blue"
+    ],
+    "INT8-qwen-seeded": [
+      "Blue",
+      "蓝"
+    ],
+    "INT8-smol-greedy": [
+      "Blue.",
+      "Blue."
+    ],
+    "INT8-smol-seeded": [
+      "Blue",
+      "Blue"
+    ],
+    "F64-additional-1-greedy": [
+      "No",
+      "blue"
+    ],
+    "F64-additional-1-seeded": [
+      "No",
+      "blue"
+    ],
+    "F64-additional-2-greedy": [
+      "blue",
+      "blue"
+    ],
+    "F64-additional-2-seeded": [
+      "blue",
+      "blue"
+    ],
+    "INT8-additional-1-greedy": [
+      "No",
+      "blue"
+    ],
+    "INT8-additional-1-seeded": [
+      "No",
+      "blue"
+    ],
+    "INT8-additional-2-greedy": [
+      "blue",
+      "blue"
+    ],
+    "INT8-additional-2-seeded": [
+      "blue",
+      "blue"
+    ]
+  },
+  "archives": {
+    "REVIEW": {
+      "files": 874,
+      "bytes": 33380064,
+      "sha256": "fc583e73a524cd1af5f8c3c39d073e28758f93ea2f52b023f106176cdbe942bd"
+    },
+    "FULL": {
+      "files": 1002,
+      "bytes": 663406494,
+      "sha256": "3f911e07c32c965b14fd8e4b5cf85116cb2059af5245f49a418d9f23c07e23fd"
+    }
+  },
+  "scope": "Functional replay only. New formats still require independent real-model numerical/quality evaluation; no performance claim.",
+  "inference_or_git_run_by_auditor": false
+}

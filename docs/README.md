@@ -1,6 +1,6 @@
 # MICIUS 技术文档
 
-当前发布版本为 **v0.7.2**，纳入已验收的 M3。[发布说明](RELEASE_0_7_2.md) 记录实机结果和使用边界，[快照、采样和续聊](M3-PERSISTENCE-AND-SAMPLING.md) 说明功能、ABI 与复现协议。[v0.7.1 发布说明](RELEASE_0_7_1.md)、[M2 文字对话](M2-TEXT-CHAT.md)、[M1 模块 SDK](M1-MODULES-AND-ABI.md) 保留各自的历史验收范围。
+当前发布目录为 **v0.7.3**，纳入已验收的 M4-P1 稠密模型与混合权重功能。[发布说明](RELEASE_0_7_3.md) 汇总实际通过的检查与限制，[M4 设计](M4-DENSE-GGUF-AND-WEIGHTS.md) 解释支持边界，[D1 首词对照](M4-D1-FIRST-TOKEN.md) 单独记录数值差异。历史 [v0.7.2](RELEASE_0_7_2.md)、[v0.7.1](RELEASE_0_7_1.md)、[M3](M3-PERSISTENCE-AND-SAMPLING.md)、[M2](M2-TEXT-CHAT.md)、[M1](M1-MODULES-AND-ABI.md) 保留各自验收范围。
 
 v0.7 的 I1–I25 研究记录保留对应实验时的模型、程序和评估口径。
 
@@ -14,7 +14,7 @@ v0.7 的 I1–I25 研究记录保留对应实验时的模型、程序和评估�
 | 性能、分区间收益和内存取舍 | [性能与内存研究](INT8_PERFORMANCE_AND_MEMORY.md) |
 | 每项候选为何采用或停止 | [I1–I25 实验台账](INT8_EXPERIMENT_LEDGER.md) |
 | 从 F64 到 INT8 的决策顺序 | [开发历史](DEVELOPMENT_HISTORY.md) |
-| 报告与构建身份 | [v0.7.2 源码清单](../RELEASE-MANIFEST.json) · [固定实机协议](../validation/m3/protocol.json) · [INT8 研究来源](evidence/int8-report-sources.json) · [v0.7 发布验证](evidence/v0.7-verification.json) |
+| 报告与构建身份 | [v0.7.3 源码清单](../RELEASE-MANIFEST.json) · [M4 实机协议](../validation/m4/protocol.json) · [历史 M3 协议](../validation/m3/protocol.json) · [INT8 研究来源](evidence/int8-report-sources.json) · [v0.7 发布验证](evidence/v0.7-verification.json) |
 
 ## F64 参考与历史
 

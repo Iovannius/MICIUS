@@ -2,6 +2,7 @@
 #include "AICoreEngine.h"
 #include "AI/AICompactScaleInternal.h"
 #include "micius_state.h"
+#include "AI/FileWeights.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -76,7 +77,7 @@ bool CheckedProduct(size_t lhs, size_t rhs, size_t* result) noexcept
     return true;
 }
 
-bool ValidateConfig(const MiciusConfig& config) noexcept
+bool ValidateConfig(const MiciusConfig& config, bool file_model = false) noexcept
 {
     if (config.hidden_dim == 0 || config.vocab_size == 0 ||
         config.max_seq_len == 0 || config.kv_pool_size_mb == 0 ||
@@ -112,7 +113,7 @@ bool ValidateConfig(const MiciusConfig& config) noexcept
 
     const uint64_t projected_hidden =
         static_cast<uint64_t>(config.num_heads) * config.head_dim;
-    if (projected_hidden != config.hidden_dim) {
+    if (projected_hidden > UINT32_MAX || (!file_model && projected_hidden != config.hidden_dim)) {
         SetError(MICIUS_ERROR_INVALID_ARGUMENT, "hidden_dim must equal num_heads * head_dim");
         return false;
     }
@@ -130,13 +131,13 @@ bool ValidateConfig(const MiciusConfig& config) noexcept
             "partial rotary dimensions are not implemented; rope_dimension_count must equal head_dim");
         return false;
     }
-    if (config.hidden_dim % 32U != 0) {
+    if (!file_model && config.hidden_dim % 32U != 0) {
         SetError(
             MICIUS_ERROR_INVALID_ARGUMENT,
             "the exact Q8_0 bridge requires hidden_dim to be divisible by 32");
         return false;
     }
-    if (config.intermediate_dim % 32U != 0) {
+    if (!file_model && config.intermediate_dim % 32U != 0) {
         SetError(
             MICIUS_ERROR_INVALID_ARGUMENT,
             "the exact row-wise Q8_0 contract requires intermediate_dim to be divisible by 32");
@@ -146,7 +147,7 @@ bool ValidateConfig(const MiciusConfig& config) noexcept
     const uint64_t kv_dimension =
         static_cast<uint64_t>(config.num_kv_heads) * config.head_dim;
     const uint64_t qkv_dimension =
-        static_cast<uint64_t>(config.hidden_dim) + 2U * kv_dimension;
+        projected_hidden + 2U * kv_dimension;
     if (qkv_dimension > std::numeric_limits<uint32_t>::max()) {
         SetError(MICIUS_ERROR_INVALID_ARGUMENT, "combined QKV dimension exceeds uint32_t");
         return false;
@@ -222,9 +223,9 @@ MiciusConfig MakeLegacyConfig(const LegacyConfigPrefix& legacy) noexcept
     return config;
 }
 
-MiciusContext* CreateEngineChecked(const MiciusConfig& config) noexcept
+MiciusContext* CreateEngineChecked(const MiciusConfig& config, bool file_model = false) noexcept
 {
-    if (!ValidateConfig(config)) return nullptr;
+    if (!ValidateConfig(config, file_model)) return nullptr;
 
     try {
         auto context = std::make_unique<MiciusContext>();
@@ -366,6 +367,10 @@ bool micius::internal::BindTypedTensors(
         return false;
     }
 
+    if (context->core_engine->file_weights) {
+        SetError(MICIUS_ERROR_UNSUPPORTED_MODE,"File-owned compressed tensors cannot be rebound through V1");
+        return false;
+    }
     try {
         std::unordered_map<std::string, MiciusTensorEntryV1> provided;
         provided.reserve(count);
@@ -946,4 +951,16 @@ micius::i25::Stats micius::i25::BindingStats(const MiciusContext* c) noexcept {
 }
 std::span<const micius::i25::RetiredWeight> micius::i25::RetirableWeights(const MiciusContext* c) noexcept {
     return c && c->core_engine ? c->core_engine->I25Retired() : std::span<const RetiredWeight>{};
+}
+
+MiciusContext* micius::internal::CreateFileEngine(const MiciusConfig& c) noexcept {
+    return CreateEngineChecked(c,true);
+}
+bool micius::internal::UsesFileWeights(const MiciusContext* c) noexcept {
+    return c && c->core_engine && c->core_engine->UsesFileWeights();
+}
+bool micius::internal::BindFileWeights(MiciusContext* c,FileWeights&& w) noexcept {
+    if(!c || !c->core_engine)return false;
+    try { return c->core_engine->BindFileModel(std::move(w)); }
+    catch(...) { SetError(MICIUS_ERROR_INVALID_MODEL_DATA,"Compressed file binding failed");return false; }
 }

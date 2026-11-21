@@ -1,8 +1,10 @@
 # 运行时与 V1 接口
 
+M4 保持以下直接 V1 绑定契约，并在文件接口中增加 Qwen3 与混合权重路径。新文件矩阵借用只读映射，经过完整验证后绑定至文件会话自己的引擎；此类引擎拒绝用旧 V1 张量接口重新绑定。独立查询宽度、Q/K norm 与 RoPE 因子属于新增文件路径的内部语义，未更改原公开 V1 结构布局。具体模块、所有权与数值边界见 [M4 设计](M4-DENSE-GGUF-AND-WEIGHTS.md)。
+
 M1 增加独立版本的 GGUF 文件会话和 Parser 接口，并实现 Qwen2 的 bias 和分半 RoPE。原 V1 的相邻配对张量约定继续适用于直接绑定。见 [M1 ABI 与所有权](M1-MODULES-AND-ABI.md)。
 
-v0.7.2（M3）继续使用 v0.7.1 的运行时 C ABI `0x00060003`，原公开头未改变。源码版本和各模块 ABI 各自编号。模型走 `MICIUS_EXECUTION_REFERENCE` 的单线程前向，数值后端由所链接的库决定。[运行时接口](../include/micius_runtime.h) · [文件与 Parser 接口](../include/micius_gguf.h) · [文本接口](../include/micius_text.h)
+v0.7.3 继续使用既有运行时 C ABI `0x00060003`，原公开头未改变。源码版本和各模块 ABI 各自编号。模型走 `MICIUS_EXECUTION_REFERENCE` 的单线程前向，数值后端由所链接的库决定。[运行时接口](../include/micius_runtime.h) · [文件与 Parser 接口](../include/micius_gguf.h) · [文本接口](../include/micius_text.h)
 
 M3 新增 [独立采样](../include/micius_sampling.h)、[不透明引擎状态](../include/micius_state.h) 和 [持久化聊天](../include/micius_session.h)。Session 借用文件模型及引擎，持有会话目录锁；聊天打开期间禁止直接驱动、reset 或重新绑定该引擎。取消或失败不提交历史与 RNG，部分 KV 在下一次 Reply/Save 时从完整历史恢复。应用应显式 Save，再 CloseChat，最后 CloseGGUF。CLI 自动保存。[完整状态与所有权约定](M3-PERSISTENCE-AND-SAMPLING.md)
 

@@ -200,7 +200,13 @@ bool GGUFParser::ParseHeaders()
         }
         uint32_t type = ReadU32();
 
-        if (type == 4) { // UINT32
+        if (type==0 || type==1 || type==2 || type==3 || type==5 || type==11) {
+            const size_t width=type<=1?1:type<=3?2:type==5?4:8;
+            uint64_t n=0;ReadBytes(&n,width);
+            // Negative signed fields remain present but unavailable as uint.
+            if ((type!=1 && type!=3 && type!=5 && type!=11) || !(n & (uint64_t(1)<<(width*8-1))))
+                kv_uint64s[key]=n;
+        } else if (type == 4) { // UINT32
             kv_uint32s[key] = ReadU32();
         } else if (type == 10) { // UINT64
             kv_uint64s[key] = ReadU64();
@@ -287,14 +293,20 @@ bool GGUFParser::ParseHeaders()
                 info.byte_size = element_count * 2U;
                 break;
             case GGMLType::Q8_0:
-                if (element_count % 32U != 0 ||
+                if (info.dimensions[0] % 32U != 0 ||
                     element_count / 32U > std::numeric_limits<uint64_t>::max() / 34U) {
                     throw std::runtime_error("Q8_0 tensor is not block aligned or its byte size overflows");
                 }
                 info.byte_size = element_count / 32U * 34U;
                 break;
+            case GGMLType::Q4_K: case GGMLType::Q6_K: {
+                const uint64_t block=info.type==GGMLType::Q4_K?144:210;
+                if(info.dimensions[0]%256 || element_count/256>UINT64_MAX/block)
+                    throw std::runtime_error("K-quant tensor row alignment or size is invalid");
+                info.byte_size=element_count/256*block;break;
+            }
             default:
-                throw std::runtime_error("GGML tensor type is not supported by this checkpoint");
+                throw std::runtime_error("Unsupported tensor type; expected F32/F16/Q8_0/Q4_K/Q6_K");
         }
         tensors.push_back(info);
     }
@@ -308,6 +320,8 @@ bool GGUFParser::ParseHeaders()
         const auto it_align64 = kv_uint64s.find("general.alignment");
         if (it_align64 != kv_uint64s.end()) alignment_value = it_align64->second;
     }
+    if (metadata_names.contains("general.alignment") && !kv_uint32s.contains("general.alignment") && !kv_uint64s.contains("general.alignment"))
+        throw std::runtime_error("GGUF alignment must be a nonnegative integer");
     if (alignment_value > std::numeric_limits<size_t>::max()) {
         throw std::runtime_error("GGUF alignment exceeds the host address range");
     }
@@ -404,7 +418,7 @@ bool GGUFParser::Describe(const MiciusGGUFParserV1& module, MiciusGGUFPlanV1& pl
     };
     MiciusGGUFPlanV1 candidate{};
     if (module.describe(&view, &candidate) != 1 ||
-        (candidate.features & ~(MICIUS_GGUF_QKV_BIAS | MICIUS_GGUF_SPLIT_HALF_ROPE))) return false;
+        (candidate.features & ~(MICIUS_GGUF_QKV_BIAS | MICIUS_GGUF_SPLIT_HALF_ROPE | MICIUS_GGUF_QK_NORM | MICIUS_GGUF_ROPE_FACTORS | MICIUS_GGUF_REQUIRE_ROPE_FACTORS))) return false;
     plan = candidate;
     return true;
 }

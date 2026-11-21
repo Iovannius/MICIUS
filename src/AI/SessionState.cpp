@@ -1,12 +1,13 @@
 #include "AICoreEngine.h"
 #include "micius_state.h"
+#include "AI/FileWeights.h"
 #include "session/Binary.h"
 #include <cmath>
 #include <immintrin.h>
 
 namespace {
 using namespace micius::state;
-void Shape(Writer& w,const MiciusConfig& c,bool split,bool bias) {
+void Shape(Writer& w,const MiciusConfig& c,uint32_t split,bool bias) {
     for (uint32_t v : {c.hidden_dim,c.vocab_size,c.max_seq_len,c.num_layers,c.num_heads,
         c.num_kv_heads,c.head_dim,c.intermediate_dim,c.execution_mode,c.rope_dimension_count}) w.U32(v);
     w.Float(c.rms_norm_epsilon); w.Float(c.rope_freq_base);
@@ -29,7 +30,7 @@ std::vector<uint8_t> AIEngineFront::ExportReferenceState() const
     Writer w;
     w.bytes.reserve(ReferenceStateBytes());
     w.Raw("MCSKV001",8); w.Text(Micius_StateContractV1());
-    Shape(w,config,model_layers[0].split_half_rope,model_layers[0].q_bias!=nullptr);
+    Shape(w,config,uint32_t(model_layers[0].split_half_rope) | (file_weights ? (2U | (file_weights->qk_norm?4U:0U) | (file_weights->rope_factors?8U:0U)) : 0U),model_layers[0].q_bias!=nullptr);
     w.U32(_mm_getcsr() & 0xffc0u); // control/masks, excluding sticky exception flags
     w.U32(reference_seq_len); w.U32(reference_has_logits);
     w.U32(total_tokens_generated.load(std::memory_order_relaxed));
@@ -53,7 +54,7 @@ void AIEngineFront::ImportReferenceState(std::span<const uint8_t> bytes,uint32_t
     auto magic=r.Raw(8);
     Require(std::memcmp(magic.data(),"MCSKV001",8)==0,"Unknown KV snapshot format");
     Require(r.Text()==Micius_StateContractV1(),"Snapshot numerical/build contract differs");
-    Writer shape; Shape(shape,config,model_layers[0].split_half_rope,model_layers[0].q_bias!=nullptr);
+    Writer shape; Shape(shape,config,uint32_t(model_layers[0].split_half_rope) | (file_weights ? (2U | (file_weights->qk_norm?4U:0U) | (file_weights->rope_factors?8U:0U)) : 0U),model_layers[0].q_bias!=nullptr);
     auto actual=r.Raw(shape.bytes.size());
     Require(std::equal(actual.begin(),actual.end(),shape.bytes.begin()),"Snapshot model shape differs");
     Require(r.U32()==(_mm_getcsr() & 0xffc0u),"Snapshot floating-point control differs");

@@ -117,7 +117,7 @@ std::string Session::List(MiciusFileModel* file) {
         auto id=Utf8(entry.path().filename());
         if(!ValidId(id) || !entry.is_directory() || entry.is_symlink())continue;
         if(fs::is_regular_file(entry.path()/"sampling.conf"))
-            rows.insert(id+(fs::is_regular_file(entry.path()/"kv/chat.mcs")?"  saved":"  unsaved"));
+            rows.insert(id+(fs::is_regular_file(entry.path()/"kv"/"chat.mcs")?"  saved":"  unsaved"));
     }
     std::string result;for(const auto& row:rows)result+=row+'\n';return result.empty()?"No saved chat contexts.\n":result;
 }

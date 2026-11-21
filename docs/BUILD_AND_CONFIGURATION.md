@@ -1,6 +1,6 @@
 # 构建与配置
 
-v0.7.2 可从解压后的源码根目录直接构建。两套配置分别安装到独立的前缀。原模块见 [M1 SDK](M1-MODULES-AND-ABI.md)，新增模块见 [M3 快照与采样](M3-PERSISTENCE-AND-SAMPLING.md)。M3 的固定实机验收已通过，详见 [发布记录](RELEASE_0_7_2.md)。
+v0.7.3 从解压后的源码根目录构建，INT8/F64 安装到各自独立前缀。固定实机功能验收已通过，范围和限制见 [v0.7.3 发布记录](RELEASE_0_7_3.md)。原模块见 [M1 SDK](M1-MODULES-AND-ABI.md)，持久化与采样见 [M3](M3-PERSISTENCE-AND-SAMPLING.md)，新增架构和混合权重见 [M4](M4-DENSE-GGUF-AND-WEIGHTS.md)。
 
 Windows x64 发布配置使用 MSYS2 Clang64、CMake ≥ 3.21、Ninja 和 Python 3.8+。默认启用的文本组件还需要 pkg-config 和 Clang64 的 PCRE2-8。运行时将 Clang64 的 `bin` 加入 `PATH`。脚本默认查找 `/c/msys64/clang64/bin`，自定义路径可设置 `MICIUS_CLANG64_BIN`。本次验证使用 Clang 22.1.8 和 C++20。
 
@@ -17,9 +17,9 @@ cmake --build --preset int8-release-windows
 ctest --preset int8-release-windows --output-on-failure
 ```
 
-`bin/micius_cli.exe` 可通过 `--chat MODEL` 或交互 `load` / `chat` 开始文字对话，`--session ID` 或 `chat resume ID` 恢复。数字 token 入口为 `generate` 和 `--model-benchmark`。`bin/micius_sandbox.exe` 使用合成张量验证 V1。静态组件包括 `MICIUS::core`、`MICIUS::gguf`、`MICIUS::parser_llama`、`MICIUS::parser_qwen2`、`MICIUS::text`、`MICIUS::sampling` 和 `MICIUS::session`。可用 `cmake --install build-int8-release --prefix <prefix>` 安装 INT8 SDK。纯数值构建可配置 `-DMICIUS_ENABLE_TEXT=OFF`，不构建 text/session；sampling 可独立链接，不引入推理核心。
+`bin/micius_cli.exe` 可通过 `--chat MODEL` 或交互 `load` / `chat` 开始文字对话，`--session ID` 或 `chat resume ID` 恢复。数字 token 入口为 `generate` 和 `--model-benchmark`。`bin/micius_sandbox.exe` 使用合成张量验证 V1。静态组件包括 `MICIUS::core`、`MICIUS::quant`、`MICIUS::gguf`、`MICIUS::parser_llama`、`MICIUS::parser_qwen2`、`MICIUS::parser_qwen3`、`MICIUS::text`、`MICIUS::sampling` 和 `MICIUS::session`。可用 `cmake --install build-int8-release --prefix <prefix>` 安装 INT8 SDK。纯数值构建可配置 `-DMICIUS_ENABLE_TEXT=OFF`，不构建 text/session；sampling 可独立链接，不引入推理核心。
 
-`scripts/run_m3.sh prepare` 会在新目录构建两套 SDK，运行 CTest、移动安装前缀并验证外部 C 链接。`all` 会在准备完成后运行固定实机检查。M3 快照含数值构建指纹，编译器、源码字节、编译选项或后端变更可能使旧快照无法恢复；不要将不同构建的 SDK 混在同一安装前缀。
+`scripts/run_m4.sh prepare` 会在新目录构建两套 SDK，运行 CTest、移动安装前缀并验证外部 C 链接。`all` 会在准备完成后运行固定实机检查。M3 快照含数值构建指纹，编译器、源码字节、编译选项或后端变更可能使旧快照无法恢复；不要将不同构建的 SDK 混在同一安装前缀。
 
 ## 简单 CLI 构建
 
@@ -28,7 +28,7 @@ bash scripts/build-cli.sh
 ./micius_cli/micius_cli.exe
 ```
 
-新入口固定使用已验收的 `int8-release-windows` 配置，执行源码核对、全量构建和 CTest，然后将可执行文件与 PCRE2 DLL 发布到 `micius_cli/`。该目录名与 `micius_cli.exe` 的主名相同。中间文件及日志位于 `build-cli-int8/`，输出目录中另有许可证和 `BUILD-RECEIPT.json`。运行产物不计入源码发布清单。
+新入口使用 `int8-release-windows` 配置，执行源码核对、全量构建和 CTest，然后将可执行文件与 PCRE2 DLL 发布到 `micius_cli/`。该目录名与 `micius_cli.exe` 的主名相同。中间文件及日志位于 `build-cli-int8/`，输出目录中另有许可证和 `BUILD-RECEIPT.json`。运行产物不计入源码发布清单。
 
 新入口不覆盖已有 `micius_cli/` 或 `build-cli-int8/`；再次干净构建前由使用者保存或改名。失败时保留构建日志，不删除旧程序、模型或会话。仅在构建、测试和运行库检查全部成功后发布最终目录；`--help` 查看说明。路径含空格也可使用。
 
@@ -48,3 +48,5 @@ bash scripts/build-cli.sh
 INT8 配置选择 `I1_BACKEND=AVX2`、I10/I11/I13/I15/I17/I19、I22 描述符释放和 I25 面板。底层选项有 `MICIUS_` 前缀，阶段编号对应研究台账。Windows preset 使用 Release、Ninja、ThinLTO、LLD、静态运行库和 `ARCH=native`。INT8 编译及链接显式禁用工具链支持的 VNNI 扩展，生成的程序面向构建机指令集。
 
 普通命令的 `gemv_backend` 根据当前模型绑定状态报告实际选择。四行路径为 `w8a8_avx2_panel4`，尾行回退为 `w8a8_avx2_row4`。
+
+M4 两套完整测试分别为 INT8 33 项、F64 26 项。上表的激活/GEMV 约定针对原 Q8_32 路径；混合权重和扩展架构改用 `gguf_block_dequant_ordered_f64`，不量化激活。`MICIUS_PARSER_LLAMA`、`MICIUS_PARSER_QWEN2`、`MICIUS_PARSER_QWEN3` 分别控制三个架构模块。源代码与 SDK 的版本为 0.7.3，验收范围见 v0.7.3 发布说明；最终交付包的重建结果另见包外交付核验报告。

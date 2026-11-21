@@ -641,11 +641,9 @@ int MiciusShell::RunModelBenchmark(const std::vector<std::string>& args)
 #else
         << "gemv_fp_contract=compiler_default_scalar_reference\n"
 #endif
-        << "gemv_input_preparation=" << micius::backend::InputPreparation() << '\n'
-#if defined(MICIUS_I1_MODE) && MICIUS_I1_MODE
-        << "gemv_numerical_contract=approximate_w8a8_i1\n"
-#endif
-        << "gemv_scale_validation=" << micius::backend::ScaleValidation() << '\n'
+        << "gemv_input_preparation=" << micius::backend::InputPreparation(ctx.engine_ctx) << '\n'
+        << "gemv_numerical_contract=" << micius::backend::NumericalContract(ctx.engine_ctx) << '\n'
+        << "gemv_scale_validation=" << micius::backend::ScaleValidation(ctx.engine_ctx) << '\n'
         << "gemv_scale_storage=" << micius::backend::ScaleStorage(ctx.engine_ctx) << '\n'
         << "attention_value_backend=" << micius::backend::AttentionValue() << '\n'
         << "attention_score_query_cache=" << micius::backend::QueryCache() << '\n'
@@ -799,6 +797,9 @@ bool MiciusShell::LoadFile(const std::string& filename, uint32_t context_length)
     const MiciusGGUFParserV1* parsers[] = {
 #if defined(MICIUS_LINK_LLAMA)
         Micius_LlamaParserV1(),
+#endif
+#if defined(MICIUS_LINK_QWEN3)
+        Micius_Qwen3ParserV1(),
 #endif
 #if defined(MICIUS_LINK_QWEN2)
         Micius_Qwen2ParserV1(),
